@@ -1,0 +1,10 @@
+streamlit
+yfinance
+torch
+pandas
+numpy
+scipy
+matplotlib
+prophet
+schedule
+requests

@@ -33,7 +33,8 @@ class LSTMModel(nn.Module):
     
     def forward(self, x):
         out, _ = self.lstm(x)
-        return self.fc(out[:, -1, :])
+        out = self.fc(out[:, -1, :])
+        return out.squeeze(-1)
 
 class GRUModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1):
@@ -43,7 +44,8 @@ class GRUModel(nn.Module):
     
     def forward(self, x):
         out, _ = self.gru(x)
-        return self.fc(out[:, -1, :])
+        out = self.fc(out[:, -1, :])
+        return out.squeeze(-1)
 
 class NARXModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1):
@@ -53,12 +55,12 @@ class NARXModel(nn.Module):
     
     def forward(self, x):
         x = torch.tanh(self.fc1(x))
-        return self.fc2(x)
+        out = self.fc2(x)
+        return out.squeeze(-1)
 
 def fetch_data(interval='5m', years=5):
     ticker = 'EURUSD=X'
     end = datetime.now()
-    # Ограничи периода за 5m до 60 дни
     max_days = 60 if interval == '5m' else 365 * years
     start = end - timedelta(days=max_days)
     try:
@@ -77,7 +79,7 @@ def train_model(model, X, y, epochs=10):
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
     X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)
-    y_tensor = torch.tensor(y).float()
+    y_tensor = torch.tensor(y).float().unsqueeze(-1)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
     start_time = time.time()
@@ -115,7 +117,8 @@ async def get_signal(interval: str = "5m"):
                 models[name] = model
                 scalers[name] = scaler
             last_input = scalers[name].transform(X[-1].reshape(1, -1))
-            pred = model(torch.tensor(last_input).float().unsqueeze(1)).item()
+            last_input_tensor = torch.tensor(last_input).float().unsqueeze(1)
+            pred = model(last_input_tensor).item()
             predictions.append({'name': name, 'rate': pred, 'train_time': train_time})
         
         narx_pred = next(p['rate'] for p in predictions if p['name'] == 'NARX')

@@ -14,6 +14,7 @@ import time
 from threading import Thread
 from twilio.rest import Client
 import os
+import asyncio
 
 app = FastAPI()
 
@@ -66,9 +67,11 @@ def fetch_data(interval='5m', years=5):
     try:
         data = yf.download(ticker, start=start, end=end, interval=interval, progress=False, auto_adjust=False)
         if data.empty:
-            raise ValueError(f"No data returned for {ticker} with interval {interval}")
+            raise ValueError(f"No data returned for {ticker} with interval {interval}. Ensure the interval is valid and data is available.")
         data['Target'] = data['Close'].shift(-1)
         data.dropna(inplace=True)
+        if len(data) < 2:
+            raise ValueError(f"Insufficient data points for {ticker} with interval {interval}.")
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch data: {str(e)}")
@@ -107,6 +110,9 @@ async def get_signal(interval: str = "5m"):
         data = fetch_data(interval, 5)
         if data.empty:
             raise HTTPException(status_code=500, detail="No data available for the requested interval")
+        if len(data) < 2:
+            raise HTTPException(status_code=500, detail="Insufficient data for prediction")
+        
         X = data[['Open', 'High', 'Low']].values
         y = data['Target'].values
         
@@ -123,7 +129,8 @@ async def get_signal(interval: str = "5m"):
         
         narx_pred = next(p['rate'] for p in predictions if p['name'] == 'NARX')
         combined_pred = narx_pred
-        direction = "Buy" if combined_pred > data['Close'].iloc[-1] else "Sell"
+        last_close = data['Close'].iloc[-1]
+        direction = "Buy" if combined_pred > last_close else "Sell"
         
         latest_predictions[interval] = {
             'rate': combined_pred,
@@ -218,15 +225,19 @@ async def add_whatsapp(data: dict):
     return {'status': f'WhatsApp {data["number"]} added'}
 
 def run_scheduler():
-    def update_predictions():
+    async def update_predictions():
         for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
             try:
-                get_signal(interval)
+                await get_signal(interval)
             except:
                 pass
-    schedule.every(5).minutes.do(update_predictions)
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+    def schedule_loop():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        schedule.every(5).minutes.do(lambda: loop.run_until_complete(update_predictions()))
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
+    Thread(target=schedule_loop, daemon=True).start()
 
-Thread(target=run_scheduler, daemon=True).start()
+run_scheduler()

@@ -1,10 +1,10 @@
-streamlit
+fastapi
+uvicorn
 yfinance
 torch
 pandas
 numpy
 scipy
-matplotlib
-prophet
+scikit-learn
 schedule
-requests
+twilio

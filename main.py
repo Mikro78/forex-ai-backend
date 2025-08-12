@@ -15,6 +15,11 @@ from threading import Thread
 from twilio.rest import Client
 import os
 import asyncio
+import logging
+
+# Настройка на логове за дебъг
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -64,20 +69,26 @@ def fetch_data(interval='5m', years=5):
     end = datetime.now()
     max_days = 60 if interval == '5m' else 365 * years
     start = end - timedelta(days=max_days)
+    logger.info(f"Fetching data for {ticker} with interval {interval} from {start} to {end}")
     try:
         data = yf.download(ticker, start=start, end=end, interval=interval, progress=False, auto_adjust=False)
         if data.empty:
+            logger.error(f"No data returned for {ticker} with interval {interval}")
             raise ValueError(f"No data returned for {ticker} with interval {interval}. Ensure the interval is valid and data is available.")
         data['Target'] = data['Close'].shift(-1)
         data.dropna(inplace=True)
         if len(data) < 2:
-            raise ValueError(f"Insufficient data points for {ticker} with interval {interval}.")
+            logger.error(f"Insufficient data points for {ticker} with interval {interval}: {len(data)} rows")
+            raise ValueError(f"Insufficient data points for {ticker} with interval {interval}. Try a different interval or check data availability.")
+        logger.info(f"Data fetched successfully: {len(data)} rows")
         return data
     except Exception as e:
+        logger.error(f"Failed to fetch data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch data: {str(e)}")
 
 def train_model(model, X, y, epochs=10):
     if X.shape[0] == 0 or y.shape[0] == 0:
+        logger.error("Empty dataset provided to train_model")
         raise ValueError("Empty dataset provided to train_model")
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
@@ -107,10 +118,13 @@ trained = False
 async def get_signal(interval: str = "5m"):
     global trained
     try:
+        logger.info(f"Processing signal for interval {interval}")
         data = fetch_data(interval, 5)
         if data.empty:
+            logger.error("No data available for the requested interval")
             raise HTTPException(status_code=500, detail="No data available for the requested interval")
         if len(data) < 2:
+            logger.error("Insufficient data for prediction")
             raise HTTPException(status_code=500, detail="Insufficient data for prediction")
         
         X = data[['Open', 'High', 'Low']].values
@@ -119,6 +133,7 @@ async def get_signal(interval: str = "5m"):
         predictions = []
         for name, model in models.items():
             if not trained:
+                logger.info(f"Training {name} model")
                 model, scaler, train_time = train_model(model, X[:-1], y[:-1])
                 models[name] = model
                 scalers[name] = scaler
@@ -126,11 +141,13 @@ async def get_signal(interval: str = "5m"):
             last_input_tensor = torch.tensor(last_input).float().unsqueeze(1)
             pred = model(last_input_tensor).item()
             predictions.append({'name': name, 'rate': pred, 'train_time': train_time})
+            logger.info(f"{name} prediction: {pred}")
         
         narx_pred = next(p['rate'] for p in predictions if p['name'] == 'NARX')
         combined_pred = narx_pred
         last_close = data['Close'].iloc[-1]
         direction = "Buy" if combined_pred > last_close else "Sell"
+        logger.info(f"Combined prediction: {combined_pred}, Last close: {last_close}, Direction: {direction}")
         
         latest_predictions[interval] = {
             'rate': combined_pred,
@@ -142,19 +159,27 @@ async def get_signal(interval: str = "5m"):
         }
         
         try:
+            gmail_user = os.getenv('GMAIL_USER')
+            gmail_pass = os.getenv('GMAIL_PASS')
+            logger.info(f"Sending email to mironedv@abv.bg using GMAIL_USER: {gmail_user}")
+            if not gmail_user or not gmail_pass:
+                logger.error("GMAIL_USER or GMAIL_PASS not set")
+                raise ValueError("GMAIL_USER or GMAIL_PASS not set")
             msg = MIMEText(f"FOREX Signal: {direction} @ {combined_pred:.5f} (EUR/USD {interval})")
             msg['Subject'] = 'AI Forex Signal'
-            msg['From'] = os.getenv('GMAIL_USER')
+            msg['From'] = gmail_user
             msg['To'] = 'mironedv@abv.bg'
             with smtplib.SMTP('smtp.gmail.com', 587) as server:
                 server.starttls()
-                server.login(os.getenv('GMAIL_USER'), os.getenv('GMAIL_PASS'))
+                server.login(gmail_user, gmail_pass)
                 server.send_message(msg)
+                logger.info("Email sent successfully to mironedv@abv.bg")
         except Exception as e:
-            print(f"Email failed: {e}")
+            logger.error(f"Email failed: {str(e)}")
         
         return latest_predictions[interval]
     except Exception as e:
+        logger.error(f"Error processing signal: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing signal: {str(e)}")
 
 @app.get("/api/chart")
@@ -166,6 +191,7 @@ async def get_chart(interval: str = "5m"):
             'predictions': {k: v['rate'] for k, v in latest_predictions.items() if k == interval}
         }
     except Exception as e:
+        logger.error(f"Error fetching chart data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error fetching chart data: {str(e)}")
 
 @app.get("/api/models")
@@ -196,41 +222,51 @@ async def backtest(interval: str = "5m"):
             })
         return {'predictions': predictions, 'mse': np.mean([(p['predicted'] - p['actual'])**2 for p in predictions])}
     except Exception as e:
+        logger.error(f"Error in backtest: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error in backtest: {str(e)}")
 
 @app.post("/api/train")
 async def train():
     global trained
     trained = True
+    logger.info("Training started")
     return {'status': 'Training started'}
 
 @app.post("/api/retrain")
 async def retrain():
     global trained
     trained = False
+    logger.info("Retraining started")
     return {'status': 'Retraining started'}
 
 @app.post("/api/notify/email")
 async def add_email(data: dict):
+    logger.info(f"Adding email: {data['email']}")
     return {'status': f'Email {data["email"]} added'}
 
 @app.post("/api/notify/whatsapp")
 async def add_whatsapp(data: dict):
-    client = Client(os.getenv('TWILIO_SID'), os.getenv('TWILIO_TOKEN'))
-    client.messages.create(
-        body=f"FOREX AI: Notifications enabled for {data['number']}",
-        from_='whatsapp:+14155238886',
-        to=f'whatsapp:{data["number"]}'
-    )
-    return {'status': f'WhatsApp {data["number"]} added'}
+    try:
+        client = Client(os.getenv('TWILIO_SID'), os.getenv('TWILIO_TOKEN'))
+        client.messages.create(
+            body=f"FOREX AI: Notifications enabled for {data['number']}",
+            from_='whatsapp:+14155238886',
+            to=f'whatsapp:{data["number"]}'
+        )
+        logger.info(f"WhatsApp notification enabled for {data['number']}")
+        return {'status': f'WhatsApp {data["number"]} added'}
+    except Exception as e:
+        logger.error(f"WhatsApp notification failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"WhatsApp notification failed: {str(e)}")
 
 def run_scheduler():
     async def update_predictions():
         for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
             try:
+                logger.info(f"Running scheduled prediction for interval {interval}")
                 await get_signal(interval)
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"Scheduled prediction failed for {interval}: {str(e)}")
     def schedule_loop():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)

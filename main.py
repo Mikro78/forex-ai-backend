@@ -226,7 +226,7 @@ async def add_whatsapp(data: dict):
 
 def run_scheduler():
     async def update_predictions():
-        for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
+        for interval in ['5m', '15m', '30m', '1h', '4h', '1d':
             try:
                 await get_signal(interval)
             except:

@@ -40,7 +40,7 @@ class LSTMModel(nn.Module):
     def forward(self, x):
         out, _ = self.lstm(x)
         out = self.fc(out[:, -1, :])
-        return out.squeeze(-1)
+        return out  # Запазва [N, 1]
 
 class GRUModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1):
@@ -51,7 +51,7 @@ class GRUModel(nn.Module):
     def forward(self, x):
         out, _ = self.gru(x)
         out = self.fc(out[:, -1, :])
-        return out.squeeze(-1)
+        return out  # Запазва [N, 1]
 
 class NARXModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1):
@@ -62,36 +62,38 @@ class NARXModel(nn.Module):
     def forward(self, x):
         x = torch.tanh(self.fc1(x))
         out = self.fc2(x)
-        return out.squeeze(-1)
+        return out  # Запазва [N, 1]
 
 def fetch_data(interval='5m', years=5):
     ticker = 'EURUSD=X'
     end = datetime.now()
-    # Ограничи периода за 5m до 60 дни
     max_days = 60 if interval in ['5m', '15m', '30m'] else 730 if interval in ['1h', '4h'] else 365 * years
     start = end - timedelta(days=max_days)
+    logger.info(f"Fetching data for {ticker} with interval {interval} from {start} to {end}")
     try:
         data = yf.download(ticker, start=start, end=end, interval=interval, progress=False, auto_adjust=False)
         if data.empty:
             raise ValueError(f"No data returned for {ticker} with interval {interval}")
         data['Target'] = data['Close'].shift(-1)
         data.dropna(inplace=True)
+        logger.info(f"Data fetched successfully: {len(data)} rows")
         return data
     except Exception as e:
+        logger.error(f"Failed to fetch data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch data: {str(e)}")
 
 def train_model(model, X, y, epochs=10):
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
-    X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)
-    y_tensor = torch.tensor(y).float().unsqueeze(-1)
+    X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)  # [N, 1, 3]
+    y_tensor = torch.tensor(y).float().unsqueeze(-1)        # [N, 1]
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
     start_time = time.time()
     for _ in range(epochs):
         optimizer.zero_grad()
-        output = model(X_tensor)
-        loss = criterion(output, y_tensor)
+        output = model(X_tensor)                            # [N, 1]
+        loss = criterion(output, y_tensor)                   # [N, 1] vs [N, 1]
         loss.backward()
         optimizer.step()
     return model, scaler, time.time() - start_time
@@ -109,6 +111,7 @@ trained = False
 async def get_signal(interval: str = "5m"):
     global trained
     try:
+        logger.info(f"Processing signal for interval {interval}")
         data = fetch_data(interval, 5)
         if interval == '30m':
             # Комбиниране на 5min + 15min данни за 30min предсказание
@@ -126,6 +129,7 @@ async def get_signal(interval: str = "5m"):
         predictions = []
         for name, model in models.items():
             if not trained:
+                logger.info(f"Training {name} model")
                 model, scaler, train_time = train_model(model, X[:-1], y[:-1])
                 models[name] = model
                 scalers[name] = scaler
@@ -133,11 +137,13 @@ async def get_signal(interval: str = "5m"):
             last_input_tensor = torch.tensor(last_input).float().unsqueeze(1)
             pred = model(last_input_tensor).item()
             predictions.append({'name': name, 'rate': pred, 'train_time': train_time})
+            logger.info(f"{name} prediction: {pred}")
         
         narx_pred = next(p['rate'] for p in predictions if p['name'] == 'NARX')
         combined_pred = narx_pred
-        last_close = data['Close'].iloc[-1]
+        last_close = data['Close'].iloc[-1].item()  # Гарантиране, че е скалар
         direction = "Buy" if combined_pred > last_close else "Sell"
+        logger.info(f"Combined prediction: {combined_pred}, Last close: {last_close}, Direction: {direction}")
         
         latest_predictions[interval] = {
             'rate': combined_pred,
@@ -162,23 +168,28 @@ async def get_signal(interval: str = "5m"):
             
             narx_pred_1d = next(p['rate'] for p in predictions_1d if p['name'] == 'NARX')
             combined_pred_1d = narx_pred_1d
-            last_close_1d = data_1d['Close'].iloc[-1]
+            last_close_1d = data_1d['Close'].iloc[-1].item()
             direction_1d = "Buy" if combined_pred_1d > last_close_1d else "Sell"
             
             if direction == "Buy" and direction_1d == "Buy":
                 latest_predictions[interval]['direction'] = "Strong Buy"
         
-        try:
-            msg = MIMEText(f"FOREX Signal: {latest_predictions[interval]['direction']} @ {combined_pred:.5f} (EUR/USD {interval})")
-            msg['Subject'] = 'AI Forex Signal'
-            msg['From'] = os.getenv('GMAIL_USER')
-            msg['To'] = 'mironedv@abv.bg'
-            with smtplib.SMTP('smtp.gmail.com', 587) as server:
-                server.starttls()
-                server.login(os.getenv('GMAIL_USER'), os.getenv('GMAIL_PASS'))
-                server.send_message(msg)
-        except Exception as e:
-            logger.error(f"Email failed: {str(e)}")
+        if interval == '5m' and trained:
+            try:
+                gmail_user = os.getenv('GMAIL_USER')
+                gmail_pass = os.getenv('GMAIL_PASS')
+                if gmail_user and gmail_pass:
+                    msg = MIMEText(f"FOREX Signal: {latest_predictions[interval]['direction']} @ {combined_pred:.5f} (EUR/USD {interval})")
+                    msg['Subject'] = 'AI Forex Signal'
+                    msg['From'] = gmail_user
+                    msg['To'] = 'mironedv@abv.bg'
+                    with smtplib.SMTP('smtp.gmail.com', 587) as server:
+                        server.starttls()
+                        server.login(gmail_user, gmail_pass)
+                        server.send_message(msg)
+                    logger.info("Email sent successfully to mironedv@abv.bg")
+            except Exception as e:
+                logger.error(f"Email failed: {str(e)}")
         
         return latest_predictions[interval]
     except Exception as e:

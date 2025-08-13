@@ -92,15 +92,15 @@ def train_model(model, X, y, epochs=10):
         raise ValueError("Empty dataset provided to train_model")
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
-    X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)  # Shape: [N, 1, 3]
-    y_tensor = torch.tensor(y).float().unsqueeze(-1)        # Shape: [N, 1]
+    X_tensor = torch.tensor(X_scaled).float()  # Shape: [N, 3], без unsqueeze(1)
+    y_tensor = torch.tensor(y).float().unsqueeze(-1)  # Shape: [N, 1]
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
     start_time = time.time()
     for _ in range(epochs):
         optimizer.zero_grad()
-        output = model(X_tensor)                            # Shape: [N]
-        loss = criterion(output.unsqueeze(-1), y_tensor)    # Shape: [N, 1] vs [N, 1]
+        output = model(X_tensor.unsqueeze(1))  # Добавяме unsqueeze(1) тук, за да съответства на LSTM/GRU вход
+        loss = criterion(output, y_tensor)    # Shape: [N, 1] vs [N, 1]
         loss.backward()
         optimizer.step()
     return model, scaler, time.time() - start_time
@@ -138,14 +138,14 @@ async def get_signal(interval: str = "5m"):
                 models[name] = model
                 scalers[name] = scaler
             last_input = scalers[name].transform(X[-1].reshape(1, -1))
-            last_input_tensor = torch.tensor(last_input).float().unsqueeze(1)
-            pred = model(last_input_tensor).item()
+            last_input_tensor = torch.tensor(last_input).float()
+            pred = model(last_input_tensor.unsqueeze(1)).item()
             predictions.append({'name': name, 'rate': pred, 'train_time': train_time})
             logger.info(f"{name} prediction: {pred}")
         
         narx_pred = next(p['rate'] for p in predictions if p['name'] == 'NARX')
         combined_pred = narx_pred
-        last_close = data['Close'].iloc[-1].item()  # Конвертиране в скалар
+        last_close = data['Close'].iloc[-1].item()  # Скалар
         direction = "Buy" if combined_pred > last_close else "Sell"
         logger.info(f"Combined prediction: {combined_pred}, Last close: {last_close}, Direction: {direction}")
         

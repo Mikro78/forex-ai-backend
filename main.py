@@ -40,7 +40,7 @@ class LSTMModel(nn.Module):
     def forward(self, x):
         out, _ = self.lstm(x)
         out = self.fc(out[:, -1, :])
-        return out  # [N, 1]
+        return out.squeeze(-1)  # [N]
 
 class GRUModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1):
@@ -51,7 +51,7 @@ class GRUModel(nn.Module):
     def forward(self, x):
         out, _ = self.gru(x)
         out = self.fc(out[:, -1, :])
-        return out  # [N, 1]
+        return out.squeeze(-1)  # [N]
 
 class NARXModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1):
@@ -62,7 +62,7 @@ class NARXModel(nn.Module):
     def forward(self, x):
         x = torch.tanh(self.fc1(x))
         out = self.fc2(x)
-        return out  # [N, 1]
+        return out.squeeze(-1)  # [N]
 
 def fetch_data(interval='5m', years=5):
     ticker = 'EURUSD=X'
@@ -85,15 +85,15 @@ def fetch_data(interval='5m', years=5):
 def train_model(model, X, y, epochs=10):
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
-    X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)  # [N, 1, 3]
+    X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)  # [N, 1, input_size]
     y_tensor = torch.tensor(y).float().unsqueeze(-1)        # [N, 1]
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
     start_time = time.time()
     for _ in range(epochs):
         optimizer.zero_grad()
-        output = model(X_tensor)  # [N, 1]
-        loss = criterion(output, y_tensor)
+        output = model(X_tensor)  # [N]
+        loss = criterion(output.unsqueeze(-1), y_tensor)  # [N, 1] vs [N, 1]
         loss.backward()
         optimizer.step()
     return model, scaler, time.time() - start_time
@@ -117,10 +117,13 @@ async def get_signal(interval: str = "5m"):
         if interval == '30m':
             data_5m = fetch_data('5m', 5)
             data_15m = fetch_data('15m', 5)
-            data_5m_resampled = data_5m.resample('30T').mean()
-            data_15m_resampled = data_15m.resample('30T').mean()
+            data_5m_resampled = data_5m.resample('30min').mean()
+            data_15m_resampled = data_15m.resample('30min').mean()
             data = data.join(data_5m_resampled, rsuffix='_5m').join(data_15m_resampled, rsuffix='_15m').dropna()
             X = data[['Open', 'High', 'Low', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values
+            # Реинициализирай моделите с input_size=9 за 30m
+            for name in models:
+                models[name] = type(models[name])(input_size=9)
         else:
             X = data[['Open', 'High', 'Low']].values
         y = data['Target'].values
@@ -159,6 +162,28 @@ async def get_signal(interval: str = "5m"):
                 pred_1d = model(last_input_tensor_1d).item()
                 predictions_1d.append({'name': name, 'rate': pred_1d})
             latest_predictions[interval]['predictions_1d'] = predictions_1d
+        
+        # Изпращане на имейл само за '5m' и след тренинг, на всеки 5 минути
+        if interval == '5m' and trained:
+            current_time = time.time()
+            if not last_email_time.get('5m') or (current_time - last_email_time['5m'] >= 300):
+                try:
+                    gmail_user = os.getenv('GMAIL_USER')
+                    gmail_pass = os.getenv('GMAIL_PASS')
+                    if gmail_user and gmail_pass:
+                        pred_rates = ', '.join([f"{p['name']}: {p['rate']:.5f}" for p in predictions])
+                        msg = MIMEText(f"FOREX Signal for 5m: Predictions - {pred_rates}, Last Close: {last_close:.5f}")
+                        msg['Subject'] = 'AI Forex Signal'
+                        msg['From'] = gmail_user
+                        msg['To'] = 'mironedv@abv.bg'
+                        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+                            server.starttls()
+                            server.login(gmail_user, gmail_pass)
+                            server.send_message(msg)
+                        logger.info("Email sent successfully to mironedv@abv.bg")
+                        last_email_time['5m'] = current_time
+                except Exception as e:
+                    logger.error(f"Email failed: {str(e)}")
         
         return latest_predictions[interval]
     except Exception as e:

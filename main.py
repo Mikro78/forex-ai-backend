@@ -93,14 +93,14 @@ def train_model(model, X, y, epochs=10):
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
     X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)  # Shape: [N, 1, 3]
-    y_tensor = torch.tensor(y).float()                      # Shape: [N]
+    y_tensor = torch.tensor(y).float().unsqueeze(-1)        # Shape: [N, 1]
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
     start_time = time.time()
     for _ in range(epochs):
         optimizer.zero_grad()
         output = model(X_tensor)                            # Shape: [N]
-        loss = criterion(output, y_tensor)                   # Shapes match: [N] and [N]
+        loss = criterion(output.unsqueeze(-1), y_tensor)    # Shape: [N, 1] vs [N, 1]
         loss.backward()
         optimizer.step()
     return model, scaler, time.time() - start_time
@@ -145,7 +145,7 @@ async def get_signal(interval: str = "5m"):
         
         narx_pred = next(p['rate'] for p in predictions if p['name'] == 'NARX')
         combined_pred = narx_pred
-        last_close = data['Close'].iloc[-1]
+        last_close = data['Close'].iloc[-1].item()  # Конвертиране в скалар
         direction = "Buy" if combined_pred > last_close else "Sell"
         logger.info(f"Combined prediction: {combined_pred}, Last close: {last_close}, Direction: {direction}")
         

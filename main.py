@@ -92,15 +92,15 @@ def train_model(model, X, y, epochs=10):
         raise ValueError("Empty dataset provided to train_model")
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
-    X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)
-    y_tensor = torch.tensor(y).float().unsqueeze(-1)
+    X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)  # Shape: [N, 1, 3]
+    y_tensor = torch.tensor(y).float()                      # Shape: [N]
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
     start_time = time.time()
     for _ in range(epochs):
         optimizer.zero_grad()
-        output = model(X_tensor)
-        loss = criterion(output, y_tensor)
+        output = model(X_tensor)                            # Shape: [N]
+        loss = criterion(output, y_tensor)                   # Shapes match: [N] and [N]
         loss.backward()
         optimizer.step()
     return model, scaler, time.time() - start_time

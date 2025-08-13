@@ -40,7 +40,7 @@ class LSTMModel(nn.Module):
     def forward(self, x):
         out, _ = self.lstm(x)
         out = self.fc(out[:, -1, :])
-        return out.squeeze(-1)
+        return out  # [N, 1]
 
 class GRUModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1):
@@ -51,7 +51,7 @@ class GRUModel(nn.Module):
     def forward(self, x):
         out, _ = self.gru(x)
         out = self.fc(out[:, -1, :])
-        return out.squeeze(-1)
+        return out  # [N, 1]
 
 class NARXModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1):
@@ -62,7 +62,7 @@ class NARXModel(nn.Module):
     def forward(self, x):
         x = torch.tanh(self.fc1(x))
         out = self.fc2(x)
-        return out.squeeze(-1)
+        return out  # [N, 1]
 
 def fetch_data(interval='5m', years=5):
     ticker = 'EURUSD=X'
@@ -73,13 +73,9 @@ def fetch_data(interval='5m', years=5):
     try:
         data = yf.download(ticker, start=start, end=end, interval=interval, progress=False, auto_adjust=False)
         if data.empty:
-            logger.error(f"No data returned for {ticker} with interval {interval}")
-            raise ValueError(f"No data returned for {ticker} with interval {interval}. Ensure the interval is valid and data is available.")
+            raise ValueError(f"No data returned for {ticker} with interval {interval}")
         data['Target'] = data['Close'].shift(-1)
         data.dropna(inplace=True)
-        if len(data) < 2:
-            logger.error(f"Insufficient data points for {ticker} with interval {interval}: {len(data)} rows")
-            raise ValueError(f"Insufficient data points for {ticker} with interval {interval}. Try a different interval or check data availability.")
         logger.info(f"Data fetched successfully: {len(data)} rows")
         return data
     except Exception as e:
@@ -87,19 +83,16 @@ def fetch_data(interval='5m', years=5):
         raise HTTPException(status_code=500, detail=f"Failed to fetch data: {str(e)}")
 
 def train_model(model, X, y, epochs=10):
-    if X.shape[0] == 0 or y.shape[0] == 0:
-        logger.error("Empty dataset provided to train_model")
-        raise ValueError("Empty dataset provided to train_model")
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
-    X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)
-    y_tensor = torch.tensor(y).float().unsqueeze(-1)
+    X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)  # [N, 1, 3]
+    y_tensor = torch.tensor(y).float().unsqueeze(-1)        # [N, 1]
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
     start_time = time.time()
     for _ in range(epochs):
         optimizer.zero_grad()
-        output = model(X_tensor)
+        output = model(X_tensor)  # [N, 1]
         loss = criterion(output, y_tensor)
         loss.backward()
         optimizer.step()
@@ -113,17 +106,17 @@ models = {
 }
 scalers = {}
 trained = False
+last_email_time = {}
 
 @app.get("/api/signal")
 async def get_signal(interval: str = "5m"):
     global trained
     try:
+        logger.info(f"Processing signal for interval {interval}")
         data = fetch_data(interval, 5)
         if interval == '30m':
-            # Комбиниране на 5min + 15min данни за 30min предсказание
             data_5m = fetch_data('5m', 5)
             data_15m = fetch_data('15m', 5)
-            # Resample to 30m and add mean features
             data_5m_resampled = data_5m.resample('30T').mean()
             data_15m_resampled = data_15m.resample('30T').mean()
             data = data.join(data_5m_resampled, rsuffix='_5m').join(data_15m_resampled, rsuffix='_15m').dropna()
@@ -135,6 +128,7 @@ async def get_signal(interval: str = "5m"):
         predictions = []
         for name, model in models.items():
             if not trained:
+                logger.info(f"Training {name} model")
                 model, scaler, train_time = train_model(model, X[:-1], y[:-1])
                 models[name] = model
                 scalers[name] = scaler
@@ -142,25 +136,65 @@ async def get_signal(interval: str = "5m"):
             last_input_tensor = torch.tensor(last_input).float().unsqueeze(1)
             pred = model(last_input_tensor).item()
             predictions.append({'name': name, 'rate': pred, 'train_time': train_time})
+            logger.info(f"{name} prediction: {pred}")
         
-        narx_pred = next(p['rate'] for p in predictions if p['name'] == 'NARX')
-        combined_pred = narx_pred
-        last_close = data['Close'].iloc[-1]
-        direction = "Buy" if combined_pred > last_close else "Sell"
-        
+        last_close = data['Close'].iloc[-1].item()
         latest_predictions[interval] = {
-            'rate': combined_pred,
-            'direction': direction,
+            'predictions': predictions,
+            'last_close': last_close,
             'timestamp': datetime.now().isoformat(),
             'actual': None,
             'train_time': predictions[0]['train_time'],
             'mse': 0.0001
         }
         
+        if interval == '30m':
+            data_1d = fetch_data('1d', 5)
+            X_1d = data_1d[['Open', 'High', 'Low']].values
+            y_1d = data_1d['Target'].values
+            predictions_1d = []
+            for name, model in models.items():
+                last_input_1d = scalers[name].transform(X_1d[-1].reshape(1, -1))
+                last_input_tensor_1d = torch.tensor(last_input_1d).float().unsqueeze(1)
+                pred_1d = model(last_input_tensor_1d).item()
+                predictions_1d.append({'name': name, 'rate': pred_1d})
+            latest_predictions[interval]['predictions_1d'] = predictions_1d
+        
         return latest_predictions[interval]
     except Exception as e:
         logger.error(f"Error processing signal: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing signal: {str(e)}")
+
+@app.get("/api/backtest")
+async def backtest(interval: str = "5m"):
+    try:
+        data = fetch_data(interval, 5)
+        X = data[['Open', 'High', 'Low']].values[-11:-1]  # 10 предишни прогнози
+        y = data['Target'].values[-11:-1]
+        backtest_results = {}
+        for name, model in models.items():
+            predictions = []
+            for i in range(len(X)):
+                last_input = scalers[name].transform(X[i].reshape(1, -1))
+                last_input_tensor = torch.tensor(last_input).float().unsqueeze(1)
+                pred = model(last_input_tensor).item()
+                actual = y[i]
+                direction_pred = "Buy" if pred > data['Close'].iloc[-11+i].item() else "Sell"
+                direction_actual = "Buy" if actual > data['Close'].iloc[-11+i].item() else "Sell"
+                success = direction_pred == direction_actual
+                predictions.append({
+                    'time': data.index[-11+i].isoformat(),
+                    'predicted': pred,
+                    'actual': actual,
+                    'direction_pred': direction_pred,
+                    'direction_actual': direction_actual,
+                    'success': success
+                })
+            backtest_results[name] = predictions
+        return {'backtest_results': backtest_results}
+    except Exception as e:
+        logger.error(f"Error in backtest: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error in backtest: {str(e)}")
 
 @app.get("/api/chart")
 async def get_chart(interval: str = "5m"):
@@ -168,7 +202,7 @@ async def get_chart(interval: str = "5m"):
         data = fetch_data(interval, 5)
         return {
             'prices': data['Close'].tail(100).to_dict(),
-            'predictions': {k: v['rate'] for k, v in latest_predictions.items() if k == interval}
+            'predictions': {k: v['predictions'] for k, v in latest_predictions.items() if k == interval}
         }
     except Exception as e:
         logger.error(f"Error fetching chart data: {str(e)}")
@@ -183,27 +217,6 @@ async def get_models():
             {'name': 'GRU', 'accuracy': 90.5, 'train_time': latest_predictions.get('5m', {}).get('train_time', 3.2), 'mae': 0.0021, 'predictions': 1247}
         ]
     }
-
-@app.get("/api/backtest")
-async def backtest(interval: str = "5m"):
-    try:
-        data = fetch_data(interval, 5)
-        X = data[['Open', 'High', 'Low']].values[-100:]
-        y = data['Target'].values[-100:]
-        predictions = []
-        for i in range(len(X)-1):
-            pred = models['LSTM'](torch.tensor(scalers['LSTM'].transform(X[i].reshape(1, -1))).float().unsqueeze(1)).item()
-            predictions.append({
-                'time': data.index[i].isoformat(),
-                'model': 'LSTM',
-                'predicted': pred,
-                'actual': y[i],
-                'error': abs(pred - y[i])
-            })
-        return {'predictions': predictions, 'mse': np.mean([(p['predicted'] - p['actual'])**2 for p in predictions])}
-    except Exception as e:
-        logger.error(f"Error in backtest: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error in backtest: {str(e)}")
 
 @app.post("/api/train")
 async def train():
@@ -249,7 +262,7 @@ def run_scheduler():
                 logger.error(f"Scheduled prediction failed for {interval}: {str(e)}")
     def schedule_loop():
         loop = asyncio.new_event_loop()
-        asyncio.set_event_event_loop(loop)
+        asyncio.set_event_loop(loop)
         schedule.every(5).minutes.do(lambda: loop.run_until_complete(update_predictions()))
         while True:
             schedule.run_pending()

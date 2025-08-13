@@ -40,7 +40,7 @@ class LSTMModel(nn.Module):
     def forward(self, x):
         out, _ = self.lstm(x)
         out = self.fc(out[:, -1, :])
-        return out.squeeze(-1)
+        return out
 
 class GRUModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1):
@@ -51,7 +51,7 @@ class GRUModel(nn.Module):
     def forward(self, x):
         out, _ = self.gru(x)
         out = self.fc(out[:, -1, :])
-        return out.squeeze(-1)
+        return out
 
 class NARXModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1):
@@ -62,7 +62,7 @@ class NARXModel(nn.Module):
     def forward(self, x):
         x = torch.tanh(self.fc1(x))
         out = self.fc2(x)
-        return out.squeeze(-1)
+        return out
 
 def fetch_data(interval='5m', years=5):
     ticker = 'EURUSD=X'
@@ -92,15 +92,15 @@ def train_model(model, X, y, epochs=10):
         raise ValueError("Empty dataset provided to train_model")
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
-    X_tensor = torch.tensor(X_scaled).float()  # Shape: [N, 3], без unsqueeze(1)
-    y_tensor = torch.tensor(y).float().unsqueeze(-1)  # Shape: [N, 1]
+    X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)  # Shape: [N, 1, 3]
+    y_tensor = torch.tensor(y).float().unsqueeze(-1)        # Shape: [N, 1]
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
     start_time = time.time()
     for _ in range(epochs):
         optimizer.zero_grad()
-        output = model(X_tensor.unsqueeze(1))  # Добавяме unsqueeze(1) тук, за да съответства на LSTM/GRU вход
-        loss = criterion(output, y_tensor)    # Shape: [N, 1] vs [N, 1]
+        output = model(X_tensor)                            # Shape: [N, 1]
+        loss = criterion(output, y_tensor)                   # Shapes match: [N, 1] vs [N, 1]
         loss.backward()
         optimizer.step()
     return model, scaler, time.time() - start_time
@@ -113,6 +113,7 @@ models = {
 }
 scalers = {}
 trained = False
+last_email_time = {}
 
 @app.get("/api/signal")
 async def get_signal(interval: str = "5m"):
@@ -138,8 +139,8 @@ async def get_signal(interval: str = "5m"):
                 models[name] = model
                 scalers[name] = scaler
             last_input = scalers[name].transform(X[-1].reshape(1, -1))
-            last_input_tensor = torch.tensor(last_input).float()
-            pred = model(last_input_tensor.unsqueeze(1)).item()
+            last_input_tensor = torch.tensor(last_input).float().unsqueeze(1)
+            pred = model(last_input_tensor).item()
             predictions.append({'name': name, 'rate': pred, 'train_time': train_time})
             logger.info(f"{name} prediction: {pred}")
         
@@ -158,24 +159,29 @@ async def get_signal(interval: str = "5m"):
             'mse': 0.0001
         }
         
-        try:
-            gmail_user = os.getenv('GMAIL_USER')
-            gmail_pass = os.getenv('GMAIL_PASS')
-            logger.info(f"Sending email to mironedv@abv.bg using GMAIL_USER: {gmail_user}")
-            if not gmail_user or not gmail_pass:
-                logger.error("GMAIL_USER or GMAIL_PASS not set")
-                raise ValueError("GMAIL_USER or GMAIL_PASS not set")
-            msg = MIMEText(f"FOREX Signal: {direction} @ {combined_pred:.5f} (EUR/USD {interval})")
-            msg['Subject'] = 'AI Forex Signal'
-            msg['From'] = gmail_user
-            msg['To'] = 'mironedv@abv.bg'
-            with smtplib.SMTP('smtp.gmail.com', 587) as server:
-                server.starttls()
-                server.login(gmail_user, gmail_pass)
-                server.send_message(msg)
-                logger.info("Email sent successfully to mironedv@abv.bg")
-        except Exception as e:
-            logger.error(f"Email failed: {str(e)}")
+        # Изпращане на имейл само за '5m' и след тренинг, на всеки 5 минути
+        if interval == '5m' and trained:
+            current_time = time.time()
+            if not last_email_time.get('5m') or (current_time - last_email_time['5m'] >= 300):  # 300 секунди = 5 минути
+                try:
+                    gmail_user = os.getenv('GMAIL_USER')
+                    gmail_pass = os.getenv('GMAIL_PASS')
+                    logger.info(f"Sending email to mironedv@abv.bg using GMAIL_USER: {gmail_user}")
+                    if not gmail_user or not gmail_pass:
+                        logger.error("GMAIL_USER or GMAIL_PASS not set")
+                        raise ValueError("GMAIL_USER or GMAIL_PASS not set")
+                    msg = MIMEText(f"FOREX Signal: {direction} @ {combined_pred:.5f} (EUR/USD {interval})")
+                    msg['Subject'] = 'AI Forex Signal'
+                    msg['From'] = gmail_user
+                    msg['To'] = 'mironedv@abv.bg'
+                    with smtplib.SMTP('smtp.gmail.com', 587) as server:
+                        server.starttls()
+                        server.login(gmail_user, gmail_pass)
+                        server.send_message(msg)
+                        logger.info("Email sent successfully to mironedv@abv.bg")
+                        last_email_time['5m'] = current_time
+                except Exception as e:
+                    logger.error(f"Email failed: {str(e)}")
         
         return latest_predictions[interval]
     except Exception as e:

@@ -86,14 +86,14 @@ def train_model(model, X, y, epochs=10):
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
     X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)  # [N, 1, 3]
-    y_tensor = torch.tensor(y).float().unsqueeze(-1)        # [N, 1]
+    y_tensor = torch.tensor(y).float()  # [N]
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
     start_time = time.time()
     for _ in range(epochs):
         optimizer.zero_grad()
         output = model(X_tensor).squeeze(-1)  # [N]
-        loss = criterion(output.unsqueeze(-1), y_tensor)  # [N, 1] vs [N, 1]
+        loss = criterion(output.unsqueeze(-1), y_tensor.unsqueeze(-1))  # [N, 1] vs [N, 1]
         loss.backward()
         optimizer.step()
     return model, scaler, time.time() - start_time

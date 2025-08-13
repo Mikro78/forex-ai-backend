@@ -40,7 +40,7 @@ class LSTMModel(nn.Module):
     def forward(self, x):
         out, _ = self.lstm(x)
         out = self.fc(out[:, -1, :])
-        return out  # Запазва [N, 1]
+        return out  # [N, 1]
 
 class GRUModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1):
@@ -51,7 +51,7 @@ class GRUModel(nn.Module):
     def forward(self, x):
         out, _ = self.gru(x)
         out = self.fc(out[:, -1, :])
-        return out  # Запазва [N, 1]
+        return out  # [N, 1]
 
 class NARXModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1):
@@ -62,7 +62,7 @@ class NARXModel(nn.Module):
     def forward(self, x):
         x = torch.tanh(self.fc1(x))
         out = self.fc2(x)
-        return out  # Запазва [N, 1]
+        return out  # [N, 1]
 
 def fetch_data(interval='5m', years=5):
     ticker = 'EURUSD=X'
@@ -92,8 +92,8 @@ def train_model(model, X, y, epochs=10):
     start_time = time.time()
     for _ in range(epochs):
         optimizer.zero_grad()
-        output = model(X_tensor)                            # [N, 1]
-        loss = criterion(output, y_tensor)                   # [N, 1] vs [N, 1]
+        output = model(X_tensor).squeeze(-1)  # [N]
+        loss = criterion(output.unsqueeze(-1), y_tensor)  # [N, 1] vs [N, 1]
         loss.backward()
         optimizer.step()
     return model, scaler, time.time() - start_time
@@ -106,6 +106,7 @@ models = {
 }
 scalers = {}
 trained = False
+last_email_time = {}
 
 @app.get("/api/signal")
 async def get_signal(interval: str = "5m"):
@@ -141,7 +142,7 @@ async def get_signal(interval: str = "5m"):
         
         narx_pred = next(p['rate'] for p in predictions if p['name'] == 'NARX')
         combined_pred = narx_pred
-        last_close = data['Close'].iloc[-1].item()  # Гарантиране, че е скалар
+        last_close = data['Close'].iloc[-1].item()  # Скалар
         direction = "Buy" if combined_pred > last_close else "Sell"
         logger.info(f"Combined prediction: {combined_pred}, Last close: {last_close}, Direction: {direction}")
         
@@ -174,22 +175,26 @@ async def get_signal(interval: str = "5m"):
             if direction == "Buy" and direction_1d == "Buy":
                 latest_predictions[interval]['direction'] = "Strong Buy"
         
+        # Изпращане на имейл само за '5m' и след тренинг, на всеки 5 минути
         if interval == '5m' and trained:
-            try:
-                gmail_user = os.getenv('GMAIL_USER')
-                gmail_pass = os.getenv('GMAIL_PASS')
-                if gmail_user and gmail_pass:
-                    msg = MIMEText(f"FOREX Signal: {latest_predictions[interval]['direction']} @ {combined_pred:.5f} (EUR/USD {interval})")
-                    msg['Subject'] = 'AI Forex Signal'
-                    msg['From'] = gmail_user
-                    msg['To'] = 'mironedv@abv.bg'
-                    with smtplib.SMTP('smtp.gmail.com', 587) as server:
-                        server.starttls()
-                        server.login(gmail_user, gmail_pass)
-                        server.send_message(msg)
-                    logger.info("Email sent successfully to mironedv@abv.bg")
-            except Exception as e:
-                logger.error(f"Email failed: {str(e)}")
+            current_time = time.time()
+            if not last_email_time.get('5m') or (current_time - last_email_time['5m'] >= 300):  # 300 секунди = 5 минути
+                try:
+                    gmail_user = os.getenv('GMAIL_USER')
+                    gmail_pass = os.getenv('GMAIL_PASS')
+                    if gmail_user and gmail_pass:
+                        msg = MIMEText(f"FOREX Signal: {latest_predictions[interval]['direction']} @ {combined_pred:.5f} (EUR/USD {interval})")
+                        msg['Subject'] = 'AI Forex Signal'
+                        msg['From'] = gmail_user
+                        msg['To'] = 'mironedv@abv.bg'
+                        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+                            server.starttls()
+                            server.login(gmail_user, gmail_pass)
+                            server.send_message(msg)
+                        logger.info("Email sent successfully to mironedv@abv.bg")
+                        last_email_time['5m'] = current_time
+                except Exception as e:
+                    logger.error(f"Email failed: {str(e)}")
         
         return latest_predictions[interval]
     except Exception as e:

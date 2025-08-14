@@ -92,8 +92,8 @@ def train_model(model, X, y, epochs=10):
     start_time = time.time()
     for _ in range(epochs):
         optimizer.zero_grad()
-        output = model(X_tensor)  # [N, 1]
-        loss = criterion(output, y_tensor)  # [N, 1] vs [N, 1]
+        output = model(X_tensor).squeeze(-1)  # [N]
+        loss = criterion(output.unsqueeze(-1), y_tensor)  # [N, 1] vs [N, 1]
         loss.backward()
         optimizer.step()
     return model, scaler, time.time() - start_time
@@ -122,6 +122,11 @@ async def get_signal(interval: str = "5m"):
             data = data.join(data_5m_resampled, rsuffix='_5m').join(data_15m_resampled, rsuffix='_15m').dropna()
             # Подготви всички данни с 9 колони, включително последния ред
             X = data[['Open', 'High', 'Low', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values
+            # Осигури последния ред да е пълен с данни от последните налични стойности
+            last_row_30m = data[['Open', 'High', 'Low']].iloc[-1].values
+            last_row_5m = data_5m_resampled[['Open', 'High', 'Low']].iloc[-1].values
+            last_row_15m = data_15m_resampled[['Open', 'High', 'Low']].iloc[-1].values
+            X[-1] = np.concatenate([last_row_30m, last_row_5m, last_row_15m])
             # Реинициализирай моделите с input_size=9 за 30m
             for name in models:
                 models[name] = type(models[name])(input_size=9)

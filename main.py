@@ -104,7 +104,7 @@ models = {
     'GRU': GRUModel(),
     'NARX': NARXModel(),
 }
-scalers = {}
+scalers = {}  # Ще се управлява по интервали
 trained = False
 last_email_time = {}
 
@@ -120,32 +120,36 @@ async def get_signal(interval: str = "5m"):
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
             data = data.join(data_5m_resampled, rsuffix='_5m').join(data_15m_resampled, rsuffix='_15m').dropna()
-            # Подготви тренировъчни данни с 9 колони
-            X_train = data[['Open', 'High', 'Low', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values[:-1]
-            y_train = data['Target'].values[:-1]
-            # Подготви последния ред с 9 колони
-            last_row_30m = data[['Open', 'High', 'Low']].iloc[-1].values
-            last_row_5m = data_5m_resampled[['Open', 'High', 'Low']].iloc[-1].values
-            last_row_15m = data_15m_resampled[['Open', 'High', 'Low']].iloc[-1].values
-            X_last = np.concatenate([last_row_30m, last_row_5m, last_row_15m])
-            X = np.vstack([X_train, X_last])
-            # Реинициализирай моделите и скейлърите с input_size=9 за 30m
+            # Подготви данни с 9 колони
+            X = data[['Open', 'High', 'Low', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values
+            # Реинициализирай моделите с input_size=9 за 30m
             for name in models:
                 models[name] = type(models[name])(input_size=9)
-                _, scaler, _ = train_model(models[name], X_train, y_train)
-                scalers[name] = scaler
+                if interval not in scalers:
+                    scalers[interval] = {}
+                _, scaler, _ = train_model(models[name], X[:-1], data['Target'].values[:-1])
+                scalers[interval][name] = scaler
         else:
             X = data[['Open', 'High', 'Low']].values
-        y = data['Target'].values
+            # Реинициализирай моделите с input_size=3 за останалите интервали
+            for name in models:
+                models[name] = type(models[name])(input_size=3)
+                if interval not in scalers:
+                    scalers[interval] = {}
+                _, scaler, _ = train_model(models[name], X[:-1], data['Target'].values[:-1])
+                scalers[interval][name] = scaler
         
+        y = data['Target'].values
         predictions = []
         for name, model in models.items():
-            if not trained:
-                logger.info(f"Training {name} model")
+            if not trained or interval not in scalers or name not in scalers[interval]:
+                logger.info(f"Training {name} model for interval {interval}")
                 model, scaler, train_time = train_model(model, X[:-1], y[:-1])
                 models[name] = model
-                scalers[name] = scaler
-            last_input = scalers[name].transform(X[-1].reshape(1, -1))
+                if interval not in scalers:
+                    scalers[interval] = {}
+                scalers[interval][name] = scaler
+            last_input = scalers[interval][name].transform(X[-1].reshape(1, -1))
             last_input_tensor = torch.tensor(last_input).float().unsqueeze(1)
             pred = model(last_input_tensor).item()
             predictions.append({'name': name, 'rate': pred, 'train_time': train_time})
@@ -167,7 +171,7 @@ async def get_signal(interval: str = "5m"):
             y_1d = data_1d['Target'].values
             predictions_1d = []
             for name, model in models.items():
-                last_input_1d = scalers[name].transform(X_1d[-1].reshape(1, -1))
+                last_input_1d = scalers[interval][name].transform(X_1d[-1].reshape(1, -1))
                 last_input_tensor_1d = torch.tensor(last_input_1d).float().unsqueeze(1)
                 pred_1d = model(last_input_tensor_1d).item()
                 predictions_1d.append({'name': name, 'rate': pred_1d})
@@ -203,14 +207,43 @@ async def get_signal(interval: str = "5m"):
 @app.get("/api/backtest")
 async def backtest(interval: str = "5m"):
     try:
+        logger.info(f"Processing backtest for interval {interval}")
         data = fetch_data(interval, 5)
-        X = data[['Open', 'High', 'Low']].values[-11:-1]  # 10 предишни прогнози
+        if interval == '30m':
+            data_5m = fetch_data('5m', 5)
+            data_15m = fetch_data('15m', 5)
+            data_5m_resampled = data_5m.resample('30min').mean()
+            data_15m_resampled = data_15m.resample('30min').mean()
+            data = data.join(data_5m_resampled, rsuffix='_5m').join(data_15m_resampled, rsuffix='_15m').dropna()
+            X = data[['Open', 'High', 'Low', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values[-11:-1]
+            for name in models:
+                models[name] = type(models[name])(input_size=9)
+                if interval not in scalers:
+                    scalers[interval] = {}
+                _, scaler, _ = train_model(models[name], X, data['Target'].values[-11:-1])
+                scalers[interval][name] = scaler
+        else:
+            X = data[['Open', 'High', 'Low']].values[-11:-1]
+            for name in models:
+                models[name] = type(models[name])(input_size=3)
+                if interval not in scalers:
+                    scalers[interval] = {}
+                _, scaler, _ = train_model(models[name], X, data['Target'].values[-11:-1])
+                scalers[interval][name] = scaler
+        
         y = data['Target'].values[-11:-1]
         backtest_results = {}
         for name, model in models.items():
+            if interval not in scalers or name not in scalers[interval]:
+                logger.info(f"Training {name} model for backtest interval {interval}")
+                model, scaler, _ = train_model(model, X, y)
+                models[name] = model
+                if interval not in scalers:
+                    scalers[interval] = {}
+                scalers[interval][name] = scaler
             predictions = []
             for i in range(len(X)):
-                last_input = scalers[name].transform(X[i].reshape(1, -1))
+                last_input = scalers[interval][name].transform(X[i].reshape(1, -1))
                 last_input_tensor = torch.tensor(last_input).float().unsqueeze(1)
                 pred = model(last_input_tensor).item()
                 actual = y[i]

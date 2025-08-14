@@ -77,7 +77,11 @@ def fetch_data(interval='5m', years=10):
         if data.empty:
             raise ValueError(f"No data returned for {ticker} with interval {interval}")
         data['Target'] = data['Close'].shift(-1)
-        data['SMA10'] = talib.SMA(np.array(data['Close']), timeperiod=10)
+        # Ensure Close is a 1D array and check length for SMA
+        close_array = data['Close'].to_numpy()
+        if len(close_array) < 10:  # SMA requires at least 10 data points
+            raise ValueError(f"Insufficient data for SMA: {len(close_array)} points, need at least 10")
+        data['SMA10'] = talib.SMA(close_array, timeperiod=10)
         data.dropna(inplace=True)
         logger.info(f"Data fetched successfully: {len(data)} rows")
         return data

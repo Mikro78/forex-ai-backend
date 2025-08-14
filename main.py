@@ -120,7 +120,7 @@ async def get_signal(interval: str = "5m"):
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
             data = data.join(data_5m_resampled, rsuffix='_5m').join(data_15m_resampled, rsuffix='_15m').dropna()
-            # Подготви всички данни с 9 колони
+            # Подготви всички данни с 9 колони, включително последния ред
             X = data[['Open', 'High', 'Low', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values
             # Реинициализирай моделите с input_size=9 за 30m
             for name in models:

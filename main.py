@@ -66,7 +66,7 @@ class NARXModel(nn.Module):
         out = self.fc2(x)
         return out
 
-def fetch_data(interval='5m', years=10):  # Increased to 10 years
+def fetch_data(interval='5m', years=10):
     ticker = 'EURUSD=X'
     end = datetime.now()
     max_days = 60 if interval in ['5m', '15m', '30m'] else 730 if interval in ['1h', '4h'] else 365 * years
@@ -77,7 +77,7 @@ def fetch_data(interval='5m', years=10):  # Increased to 10 years
         if data.empty:
             raise ValueError(f"No data returned for {ticker} with interval {interval}")
         data['Target'] = data['Close'].shift(-1)
-        data['SMA10'] = talib.SMA(data['Close'], timeperiod=10)  # 10-day SMA
+        data['SMA10'] = talib.SMA(np.array(data['Close']), timeperiod=10)
         data.dropna(inplace=True)
         logger.info(f"Data fetched successfully: {len(data)} rows")
         return data
@@ -111,7 +111,7 @@ trained = False
 last_email_time = {}
 
 for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
-    input_size = 4 if interval != '30m' else 10  # SMA10 + 3 features for non-30m, 9 + SMA10 for 30m
+    input_size = 4 if interval != '30m' else 10
     models[interval] = {
         'LSTM': LSTMModel(input_size=input_size),
         'GRU': GRUModel(input_size=input_size),

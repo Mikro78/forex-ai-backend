@@ -83,7 +83,7 @@ def fetch_data(interval='5m', years=5):
         logger.error(f"Failed to fetch data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch data: {str(e)}")
 
-def train_model(model, X, y, epochs=10):
+def train_model(model, X, y, epochs=50):  # Increased epochs to 50
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
     X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)  # [N, 1, input_size]
@@ -96,7 +96,7 @@ def train_model(model, X, y, epochs=10):
     for _ in range(epochs):
         optimizer.zero_grad()
         output = model(X_tensor)  # [N, 1]
-        loss = criterion(output, y_tensor)  # [N, 1] vs [N, 1]
+        loss = criterion(output, y_tensor)
         loss.backward()
         optimizer.step()
     return model, scaler, y_scaler, time.time() - start_time
@@ -130,9 +130,7 @@ async def get_signal(interval: str = "5m"):
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
             data = data.join(data_5m_resampled, rsuffix='_5m').join(data_15m_resampled, rsuffix='_15m').dropna()
-            # Подготви всички данни с 9 колони
             X = data[['Open', 'High', 'Low', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values
-            # Реинициализирай моделите с input_size=9 за 30m
             for name in models[interval]:
                 models[interval][name] = type(models[interval][name])(input_size=9)
                 if name not in scalers[interval] or not trained:
@@ -184,7 +182,6 @@ async def get_signal(interval: str = "5m"):
                 predictions_1d.append({'name': name, 'rate': pred_1d})
             latest_predictions[interval]['predictions_1d'] = predictions_1d
         
-        # Изпращане на имейл само за '5m' и след тренинг, на всеки 5 минути
         if interval == '5m' and trained:
             current_time = time.time()
             if not last_email_time.get('5m') or (current_time - last_email_time['5m'] >= 300):
@@ -244,7 +241,7 @@ async def backtest(interval: str = "5m"):
             for i in range(len(X)):
                 last_input = scalers[interval][name].transform(X[i].reshape(1, -1))
                 last_input_tensor = torch.tensor(last_input).float().unsqueeze(1)
-                pred_normalized = model(last_input_tensor).item()
+                pred_normalized = models[interval][name](last_input_tensor).item()
                 pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
                 actual = y[i]
                 direction_pred = "Buy" if pred > data['Close'].iloc[-11+i].item() else "Sell"

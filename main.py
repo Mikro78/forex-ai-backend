@@ -121,9 +121,11 @@ async def get_signal(interval: str = "5m"):
             data_15m_resampled = data_15m.resample('30min').mean()
             data = data.join(data_5m_resampled, rsuffix='_5m').join(data_15m_resampled, rsuffix='_15m').dropna()
             X = data[['Open', 'High', 'Low', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values
-            # Реинициализирай моделите с input_size=9 за 30m
+            # Реинициализирай моделите и скейлърите с input_size=9 за 30m
             for name in models:
                 models[name] = type(models[name])(input_size=9)
+                _, scaler, _ = train_model(models[name], X[:-1], data['Target'].values[:-1])
+                scalers[name] = scaler
         else:
             X = data[['Open', 'High', 'Low']].values
         y = data['Target'].values

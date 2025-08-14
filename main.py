@@ -120,15 +120,8 @@ async def get_signal(interval: str = "5m"):
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
             data = data.join(data_5m_resampled, rsuffix='_5m').join(data_15m_resampled, rsuffix='_15m').dropna()
-            # Подготви X_train с 9 колони за тренинг
-            X_train = data[['Open', 'High', 'Low', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values[:-1]
-            y_train = data['Target'].values[:-1]
-            # Подготви X_last с 9 колони за предсказание
-            last_row_30m = data[['Open', 'High', 'Low']].iloc[-1].values
-            last_row_5m = data_5m_resampled[['Open', 'High', 'Low']].iloc[-1].values
-            last_row_15m = data_15m_resampled[['Open', 'High', 'Low']].iloc[-1].values
-            X_last = np.concatenate([last_row_30m, last_row_5m, last_row_15m]).reshape(1, -1)
-            X = np.vstack([X_train, X_last])
+            # Подготви всички данни с 9 колони
+            X = data[['Open', 'High', 'Low', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values
             # Реинициализирай моделите с input_size=9 за 30m
             for name in models:
                 models[name] = type(models[name])(input_size=9)
@@ -136,7 +129,7 @@ async def get_signal(interval: str = "5m"):
                     scalers[interval] = {}
                 if name not in scalers[interval] or not trained:
                     logger.info(f"Training {name} model for interval {interval}")
-                    model, scaler, train_time = train_model(models[name], X_train, y_train)
+                    model, scaler, train_time = train_model(models[name], X[:-1], data['Target'].values[:-1])
                     models[name] = model
                     scalers[interval][name] = scaler
         else:

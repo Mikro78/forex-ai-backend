@@ -16,6 +16,7 @@ from twilio.rest import Client
 import os
 import asyncio
 import logging
+import talib
 
 # Настройка на логове за дебъг
 logging.basicConfig(level=logging.INFO)
@@ -60,12 +61,12 @@ class NARXModel(nn.Module):
         self.fc2 = nn.Linear(hidden_size, output_size)
     
     def forward(self, x):
-        x = x.squeeze(1)  # Remove seq_len dimension
+        x = x.squeeze(1)
         x = torch.tanh(self.fc1(x))
         out = self.fc2(x)
         return out
 
-def fetch_data(interval='5m', years=5):
+def fetch_data(interval='5m', years=10):  # Increased to 10 years
     ticker = 'EURUSD=X'
     end = datetime.now()
     max_days = 60 if interval in ['5m', '15m', '30m'] else 730 if interval in ['1h', '4h'] else 365 * years
@@ -76,6 +77,7 @@ def fetch_data(interval='5m', years=5):
         if data.empty:
             raise ValueError(f"No data returned for {ticker} with interval {interval}")
         data['Target'] = data['Close'].shift(-1)
+        data['SMA10'] = talib.SMA(data['Close'], timeperiod=10)  # 10-day SMA
         data.dropna(inplace=True)
         logger.info(f"Data fetched successfully: {len(data)} rows")
         return data
@@ -83,19 +85,19 @@ def fetch_data(interval='5m', years=5):
         logger.error(f"Failed to fetch data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch data: {str(e)}")
 
-def train_model(model, X, y, epochs=50):  # Increased epochs to 50
+def train_model(model, X, y, epochs=50):
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
-    X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)  # [N, 1, input_size]
+    X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)
     y_scaler = MinMaxScaler()
     y_scaled = y_scaler.fit_transform(y.reshape(-1, 1)).squeeze()
-    y_tensor = torch.tensor(y_scaled).float().unsqueeze(-1)  # [N, 1]
+    y_tensor = torch.tensor(y_scaled).float().unsqueeze(-1)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
     start_time = time.time()
     for _ in range(epochs):
         optimizer.zero_grad()
-        output = model(X_tensor)  # [N, 1]
+        output = model(X_tensor)
         loss = criterion(output, y_tensor)
         loss.backward()
         optimizer.step()
@@ -109,7 +111,7 @@ trained = False
 last_email_time = {}
 
 for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
-    input_size = 9 if interval == '30m' else 3
+    input_size = 4 if interval != '30m' else 10  # SMA10 + 3 features for non-30m, 9 + SMA10 for 30m
     models[interval] = {
         'LSTM': LSTMModel(input_size=input_size),
         'GRU': GRUModel(input_size=input_size),
@@ -123,16 +125,16 @@ async def get_signal(interval: str = "5m"):
     global trained
     try:
         logger.info(f"Processing signal for interval {interval}")
-        data = fetch_data(interval, 5)
+        data = fetch_data(interval, 10)
         if interval == '30m':
-            data_5m = fetch_data('5m', 5)
-            data_15m = fetch_data('15m', 5)
+            data_5m = fetch_data('5m', 10)
+            data_15m = fetch_data('15m', 10)
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
             data = data.join(data_5m_resampled, rsuffix='_5m').join(data_15m_resampled, rsuffix='_15m').dropna()
-            X = data[['Open', 'High', 'Low', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values
+            X = data[['Open', 'High', 'Low', 'SMA10', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values
             for name in models[interval]:
-                models[interval][name] = type(models[interval][name])(input_size=9)
+                models[interval][name] = type(models[interval][name])(input_size=10)
                 if name not in scalers[interval] or not trained:
                     logger.info(f"Training {name} model for interval {interval}")
                     model, scaler, y_scaler, train_time = train_model(models[interval][name], X[:-1], data['Target'].values[:-1])
@@ -140,7 +142,7 @@ async def get_signal(interval: str = "5m"):
                     scalers[interval][name] = scaler
                     y_scalers[interval][name] = y_scaler
         else:
-            X = data[['Open', 'High', 'Low']].values
+            X = data[['Open', 'High', 'Low', 'SMA10']].values
             for name in models[interval]:
                 if name not in scalers[interval] or not trained:
                     logger.info(f"Training {name} model for interval {interval}")
@@ -169,13 +171,12 @@ async def get_signal(interval: str = "5m"):
         }
         
         if interval == '30m':
-            data_1d = fetch_data('1d', 5)
-            X_1d = data_1d[['Open', 'High', 'Low']].values
+            data_1d = fetch_data('1d', 10)
+            X_1d = data_1d[['Open', 'High', 'Low', 'SMA10']].values
             y_1d = data_1d['Target'].values
             predictions_1d = []
             for name in models[interval]:
-                last_input_1d = np.pad(X_1d[-1].reshape(1, -1), ((0,0), (0,6)), 'constant')  # Pad with 6 zeros to make 9 features
-                last_input_1d = scalers[interval][name].transform(last_input_1d)
+                last_input_1d = scalers[interval][name].transform(X_1d[-1].reshape(1, -1))
                 last_input_tensor_1d = torch.tensor(last_input_1d).float().unsqueeze(1)
                 pred_normalized_1d = model(last_input_tensor_1d).item()
                 pred_1d = y_scalers[interval][name].inverse_transform([[pred_normalized_1d]])[0][0]
@@ -212,22 +213,22 @@ async def get_signal(interval: str = "5m"):
 async def backtest(interval: str = "5m"):
     try:
         logger.info(f"Processing backtest for interval {interval}")
-        data = fetch_data(interval, 5)
+        data = fetch_data(interval, 10)
         if interval == '30m':
-            data_5m = fetch_data('5m', 5)
-            data_15m = fetch_data('15m', 5)
+            data_5m = fetch_data('5m', 10)
+            data_15m = fetch_data('15m', 10)
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
             data = data.join(data_5m_resampled, rsuffix='_5m').join(data_15m_resampled, rsuffix='_15m').dropna()
-            X = data[['Open', 'High', 'Low', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values[-11:-1]
+            X = data[['Open', 'High', 'Low', 'SMA10', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values[-11:-1]
             for name in models[interval]:
-                models[interval][name] = type(models[interval][name])(input_size=9)
+                models[interval][name] = type(models[interval][name])(input_size=10)
                 if name not in scalers[interval]:
                     _, scaler, y_scaler, _ = train_model(models[interval][name], X, data['Target'].values[-11:-1])
                     scalers[interval][name] = scaler
                     y_scalers[interval][name] = y_scaler
         else:
-            X = data[['Open', 'High', 'Low']].values[-11:-1]
+            X = data[['Open', 'High', 'Low', 'SMA10']].values[-11:-1]
             for name in models[interval]:
                 if name not in scalers[interval]:
                     _, scaler, y_scaler, _ = train_model(models[interval][name], X, data['Target'].values[-11:-1])
@@ -264,7 +265,7 @@ async def backtest(interval: str = "5m"):
 @app.get("/api/chart")
 async def get_chart(interval: str = "5m"):
     try:
-        data = fetch_data(interval, 5)
+        data = fetch_data(interval, 10)
         return {
             'prices': data['Close'].tail(100).to_dict(),
             'predictions': {k: v['predictions'] for k, v in latest_predictions.items() if k == interval}

@@ -124,33 +124,39 @@ async def get_signal(interval: str = "5m"):
             X_train = data[['Open', 'High', 'Low', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values[:-1]
             y_train = data['Target'].values[:-1]
             # Подготви X_last с 9 колони за предсказание
-            last_row_30m = data[['Open', 'High', 'Low']].iloc[-1]
-            last_row_5m = data_5m_resampled[['Open', 'High', 'Low']].iloc[-1]
-            last_row_15m = data_15m_resampled[['Open', 'High', 'Low']].iloc[-1]
-            X_last = pd.concat([last_row_30m, last_row_5m, last_row_15m]).values.reshape(1, -1)
+            last_row_30m = data[['Open', 'High', 'Low']].iloc[-1].values
+            last_row_5m = data_5m_resampled[['Open', 'High', 'Low']].iloc[-1].values
+            last_row_15m = data_15m_resampled[['Open', 'High', 'Low']].iloc[-1].values
+            X_last = np.concatenate([last_row_30m, last_row_5m, last_row_15m]).reshape(1, -1)
             X = np.vstack([X_train, X_last])
             # Реинициализирай моделите с input_size=9 за 30m
             for name in models:
                 models[name] = type(models[name])(input_size=9)
                 if interval not in scalers:
                     scalers[interval] = {}
-                _, scaler, _ = train_model(models[name], X_train, y_train)
-                scalers[interval][name] = scaler
+                if name not in scalers[interval] or not trained:
+                    logger.info(f"Training {name} model for interval {interval}")
+                    model, scaler, train_time = train_model(models[name], X_train, y_train)
+                    models[name] = model
+                    scalers[interval][name] = scaler
         else:
             X = data[['Open', 'High', 'Low']].values
             for name in models:
                 models[name] = type(models[name])(input_size=3)
                 if interval not in scalers:
                     scalers[interval] = {}
-                _, scaler, _ = train_model(models[name], X[:-1], data['Target'].values[:-1])
-                scalers[interval][name] = scaler
+                if name not in scalers[interval] or not trained:
+                    logger.info(f"Training {name} model for interval {interval}")
+                    model, scaler, train_time = train_model(models[name], X[:-1], data['Target'].values[:-1])
+                    models[name] = model
+                    scalers[interval][name] = scaler
         
         predictions = []
         for name, model in models.items():
             last_input = scalers[interval][name].transform(X[-1].reshape(1, -1))
             last_input_tensor = torch.tensor(last_input).float().unsqueeze(1)
             pred = model(last_input_tensor).item()
-            predictions.append({'name': name, 'rate': pred, 'train_time': train_time})
+            predictions.append({'name': name, 'rate': pred, 'train_time': train_time if 'train_time' in locals() else 0.0})
             logger.info(f"{name} prediction: {pred}")
         
         last_close = data['Close'].iloc[-1].item()
@@ -218,16 +224,18 @@ async def backtest(interval: str = "5m"):
                 models[name] = type(models[name])(input_size=9)
                 if interval not in scalers:
                     scalers[interval] = {}
-                _, scaler, _ = train_model(models[name], X, data['Target'].values[-11:-1])
-                scalers[interval][name] = scaler
+                if name not in scalers[interval]:
+                    _, scaler, _ = train_model(models[name], X, data['Target'].values[-11:-1])
+                    scalers[interval][name] = scaler
         else:
             X = data[['Open', 'High', 'Low']].values[-11:-1]
             for name in models:
                 models[name] = type(models[name])(input_size=3)
                 if interval not in scalers:
                     scalers[interval] = {}
-                _, scaler, _ = train_model(models[name], X, data['Target'].values[-11:-1])
-                scalers[interval][name] = scaler
+                if name not in scalers[interval]:
+                    _, scaler, _ = train_model(models[name], X, data['Target'].values[-11:-1])
+                    scalers[interval][name] = scaler
         
         y = data['Target'].values[-11:-1]
         backtest_results = {}

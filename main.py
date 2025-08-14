@@ -120,12 +120,12 @@ async def get_signal(interval: str = "5m"):
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
             data = data.join(data_5m_resampled, rsuffix='_5m').join(data_15m_resampled, rsuffix='_15m').dropna()
-            # Подготви всички данни с 9 колони, включително последния ред
+            # Подготви всички данни с 9 колони
             X = data[['Open', 'High', 'Low', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values
-            # Осигури последния ред да е пълен с данни от последните налични стойности
+            # Осигури последния ред да е пълен с последните налични данни
             last_row_30m = data[['Open', 'High', 'Low']].iloc[-1].values
-            last_row_5m = data_5m_resampled[['Open', 'High', 'Low']].iloc[-1].values
-            last_row_15m = data_15m_resampled[['Open', 'High', 'Low']].iloc[-1].values
+            last_row_5m = data_5m_resampled[['Open', 'High', 'Low']].iloc[-1].fillna(method='ffill').values if data_5m_resampled.index[-1] <= data.index[-1] else data_5m_resampled.iloc[-1].values
+            last_row_15m = data_15m_resampled[['Open', 'High', 'Low']].iloc[-1].fillna(method='ffill').values if data_15m_resampled.index[-1] <= data.index[-1] else data_15m_resampled.iloc[-1].values
             X[-1] = np.concatenate([last_row_30m, last_row_5m, last_row_15m])
             # Реинициализирай моделите с input_size=9 за 30m
             for name in models:

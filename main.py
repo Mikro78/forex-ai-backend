@@ -40,7 +40,7 @@ class LSTMModel(nn.Module):
     def forward(self, x):
         out, _ = self.lstm(x)
         out = self.fc(out[:, -1, :])
-        return out  # [N, 1]
+        return out
 
 class GRUModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1):
@@ -51,7 +51,7 @@ class GRUModel(nn.Module):
     def forward(self, x):
         out, _ = self.gru(x)
         out = self.fc(out[:, -1, :])
-        return out  # [N, 1]
+        return out
 
 class NARXModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1):
@@ -60,9 +60,10 @@ class NARXModel(nn.Module):
         self.fc2 = nn.Linear(hidden_size, output_size)
     
     def forward(self, x):
+        x = x.squeeze(1)  # Remove seq_len dimension
         x = torch.tanh(self.fc1(x))
         out = self.fc2(x)
-        return out  # [N, 1]
+        return out
 
 def fetch_data(interval='5m', years=5):
     ticker = 'EURUSD=X'
@@ -86,27 +87,36 @@ def train_model(model, X, y, epochs=10):
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
     X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)  # [N, 1, input_size]
-    y_tensor = torch.tensor(y).float().unsqueeze(-1)        # [N, 1]
+    y_scaler = MinMaxScaler()
+    y_scaled = y_scaler.fit_transform(y.reshape(-1, 1)).squeeze()
+    y_tensor = torch.tensor(y_scaled).float().unsqueeze(-1)  # [N, 1]
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
     start_time = time.time()
     for _ in range(epochs):
         optimizer.zero_grad()
-        output = model(X_tensor).squeeze(-1)  # [N]
-        loss = criterion(output.unsqueeze(-1), y_tensor)  # [N, 1] vs [N, 1]
+        output = model(X_tensor)  # [N, 1]
+        loss = criterion(output, y_tensor)  # [N, 1] vs [N, 1]
         loss.backward()
         optimizer.step()
-    return model, scaler, time.time() - start_time
+    return model, scaler, y_scaler, time.time() - start_time
 
 latest_predictions = {}
-models = {
-    'LSTM': LSTMModel(),
-    'GRU': GRUModel(),
-    'NARX': NARXModel(),
-}
+models = {}
 scalers = {}
+y_scalers = {}
 trained = False
 last_email_time = {}
+
+for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
+    input_size = 9 if interval == '30m' else 3
+    models[interval] = {
+        'LSTM': LSTMModel(input_size=input_size),
+        'GRU': GRUModel(input_size=input_size),
+        'NARX': NARXModel(input_size=input_size),
+    }
+    scalers[interval] = {}
+    y_scalers[interval] = {}
 
 @app.get("/api/signal")
 async def get_signal(interval: str = "5m"):
@@ -122,38 +132,31 @@ async def get_signal(interval: str = "5m"):
             data = data.join(data_5m_resampled, rsuffix='_5m').join(data_15m_resampled, rsuffix='_15m').dropna()
             # Подготви всички данни с 9 колони
             X = data[['Open', 'High', 'Low', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values
-            # Осигури последния ред да е пълен с последните налични данни от 3 колони
-            last_row_30m = data[['Open', 'High', 'Low']].iloc[-1].values
-            last_row_5m = data_5m_resampled[['Open', 'High', 'Low']].iloc[-1].fillna(method='ffill').values if data_5m_resampled.index[-1] <= data.index[-1] else data_5m_resampled[['Open', 'High', 'Low']].iloc[-1].values
-            last_row_15m = data_15m_resampled[['Open', 'High', 'Low']].iloc[-1].fillna(method='ffill').values if data_15m_resampled.index[-1] <= data.index[-1] else data_15m_resampled[['Open', 'High', 'Low']].iloc[-1].values
-            X[-1] = np.concatenate([last_row_30m, last_row_5m, last_row_15m])
             # Реинициализирай моделите с input_size=9 за 30m
-            for name in models:
-                models[name] = type(models[name])(input_size=9)
-                if interval not in scalers:
-                    scalers[interval] = {}
+            for name in models[interval]:
+                models[interval][name] = type(models[interval][name])(input_size=9)
                 if name not in scalers[interval] or not trained:
                     logger.info(f"Training {name} model for interval {interval}")
-                    model, scaler, train_time = train_model(models[name], X[:-1], data['Target'].values[:-1])
-                    models[name] = model
+                    model, scaler, y_scaler, train_time = train_model(models[interval][name], X[:-1], data['Target'].values[:-1])
+                    models[interval][name] = model
                     scalers[interval][name] = scaler
+                    y_scalers[interval][name] = y_scaler
         else:
             X = data[['Open', 'High', 'Low']].values
-            for name in models:
-                models[name] = type(models[name])(input_size=3)
-                if interval not in scalers:
-                    scalers[interval] = {}
+            for name in models[interval]:
                 if name not in scalers[interval] or not trained:
                     logger.info(f"Training {name} model for interval {interval}")
-                    model, scaler, train_time = train_model(models[name], X[:-1], data['Target'].values[:-1])
-                    models[name] = model
+                    model, scaler, y_scaler, train_time = train_model(models[interval][name], X[:-1], data['Target'].values[:-1])
+                    models[interval][name] = model
                     scalers[interval][name] = scaler
+                    y_scalers[interval][name] = y_scaler
         
         predictions = []
-        for name, model in models.items():
+        for name, model in models[interval].items():
             last_input = scalers[interval][name].transform(X[-1].reshape(1, -1))
             last_input_tensor = torch.tensor(last_input).float().unsqueeze(1)
-            pred = model(last_input_tensor).item()
+            pred_normalized = model(last_input_tensor).item()
+            pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
             predictions.append({'name': name, 'rate': pred, 'train_time': train_time if 'train_time' in locals() else 0.0})
             logger.info(f"{name} prediction: {pred}")
         
@@ -172,10 +175,12 @@ async def get_signal(interval: str = "5m"):
             X_1d = data_1d[['Open', 'High', 'Low']].values
             y_1d = data_1d['Target'].values
             predictions_1d = []
-            for name, model in models.items():
-                last_input_1d = scalers[interval][name].transform(X_1d[-1].reshape(1, -1))
+            for name in models[interval]:
+                last_input_1d = np.pad(X_1d[-1].reshape(1, -1), ((0,0), (0,6)), 'constant')  # Pad with 6 zeros to make 9 features
+                last_input_1d = scalers[interval][name].transform(last_input_1d)
                 last_input_tensor_1d = torch.tensor(last_input_1d).float().unsqueeze(1)
-                pred_1d = model(last_input_tensor_1d).item()
+                pred_normalized_1d = model(last_input_tensor_1d).item()
+                pred_1d = y_scalers[interval][name].inverse_transform([[pred_normalized_1d]])[0][0]
                 predictions_1d.append({'name': name, 'rate': pred_1d})
             latest_predictions[interval]['predictions_1d'] = predictions_1d
         
@@ -218,31 +223,29 @@ async def backtest(interval: str = "5m"):
             data_15m_resampled = data_15m.resample('30min').mean()
             data = data.join(data_5m_resampled, rsuffix='_5m').join(data_15m_resampled, rsuffix='_15m').dropna()
             X = data[['Open', 'High', 'Low', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values[-11:-1]
-            for name in models:
-                models[name] = type(models[name])(input_size=9)
-                if interval not in scalers:
-                    scalers[interval] = {}
+            for name in models[interval]:
+                models[interval][name] = type(models[interval][name])(input_size=9)
                 if name not in scalers[interval]:
-                    _, scaler, _ = train_model(models[name], X, data['Target'].values[-11:-1])
+                    _, scaler, y_scaler, _ = train_model(models[interval][name], X, data['Target'].values[-11:-1])
                     scalers[interval][name] = scaler
+                    y_scalers[interval][name] = y_scaler
         else:
             X = data[['Open', 'High', 'Low']].values[-11:-1]
-            for name in models:
-                models[name] = type(models[name])(input_size=3)
-                if interval not in scalers:
-                    scalers[interval] = {}
+            for name in models[interval]:
                 if name not in scalers[interval]:
-                    _, scaler, _ = train_model(models[name], X, data['Target'].values[-11:-1])
+                    _, scaler, y_scaler, _ = train_model(models[interval][name], X, data['Target'].values[-11:-1])
                     scalers[interval][name] = scaler
+                    y_scalers[interval][name] = y_scaler
         
         y = data['Target'].values[-11:-1]
         backtest_results = {}
-        for name, model in models.items():
+        for name in models[interval]:
             predictions = []
             for i in range(len(X)):
                 last_input = scalers[interval][name].transform(X[i].reshape(1, -1))
                 last_input_tensor = torch.tensor(last_input).float().unsqueeze(1)
-                pred = model(last_input_tensor).item()
+                pred_normalized = model(last_input_tensor).item()
+                pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
                 actual = y[i]
                 direction_pred = "Buy" if pred > data['Close'].iloc[-11+i].item() else "Sell"
                 direction_actual = "Buy" if actual > data['Close'].iloc[-11+i].item() else "Sell"

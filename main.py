@@ -80,16 +80,17 @@ def fetch_data(interval='5m', years=10):
         close_array = data['Close'].to_numpy().flatten()
         logger.info(f"Close array shape: {close_array.shape}, first 5 values: {close_array[:5]}")
         if len(close_array) < 10:
-            raise ValueError(f"Insufficient data for SMA: {len(close_array)} points, need at least 10")
+            raise ValueError(f"Insufficient data for SMA/EMA: {len(close_array)} points, need at least 10")
         data['SMA10'] = talib.SMA(close_array, timeperiod=10)
+        data['EMA10'] = talib.EMA(close_array, timeperiod=10)  # Added EMA10 for noise filtering
         data.dropna(inplace=True)
-        logger.info(f"Data fetched successfully: {len(data)} rows after.dropna")
+        logger.info(f"Data fetched successfully: {len(data)} rows after dropna")
         return data
     except Exception as e:
         logger.error(f"Failed to fetch data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch data: {str(e)}")
 
-def train_model(model, X, y, epochs=50):
+def train_model(model, X, y, epochs=100):  # Increased to 100 for better learning
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
     X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)
@@ -115,7 +116,7 @@ trained = False
 last_email_time = {}
 
 for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
-    input_size = 4 if interval != '30m' else 10
+    input_size = 5 if interval != '30m' else 11  # Added EMA10 to input_size
     models[interval] = {
         'LSTM': LSTMModel(input_size=input_size),
         'GRU': GRUModel(input_size=input_size),
@@ -135,16 +136,16 @@ async def get_signal(interval: str = "5m"):
             data_15m = fetch_data('15m', 10)
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
-            data = data.join(data_5m_resampled[['Open', 'High', 'Low']].add_suffix('_5m'), how='outer') \
-                      .join(data_15m_resampled[['Open', 'High', 'Low']].add_suffix('_15m'), how='outer')
+            data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'SMA10', 'EMA10']].add_suffix('_5m'), how='outer') \
+                      .join(data_15m_resampled[['Open', 'High', 'Low', 'SMA10', 'EMA10']].add_suffix('_15m'), how='outer')
             logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
             data = data.dropna()
             logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
-            X = data[['Open', 'High', 'Low', 'SMA10', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values
-            if X.shape[1] != 10:
-                raise ValueError(f"Expected 10 features, got {X.shape[1]}: {data.columns.tolist()}")
+            X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m', 'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']].values
+            if X.shape[1] != 15:  # Adjusted to include all 15 features
+                raise ValueError(f"Expected 15 features, got {X.shape[1]}: {data.columns.tolist()}")
             for name in models[interval]:
-                models[interval][name] = type(models[interval][name])(input_size=10)
+                models[interval][name] = type(models[interval][name])(input_size=15)
                 if name not in scalers[interval] or not trained:
                     logger.info(f"Training {name} model for interval {interval}")
                     model, scaler, y_scaler, train_time = train_model(models[interval][name], X[:-1], data['Target'].values[:-1])
@@ -152,7 +153,7 @@ async def get_signal(interval: str = "5m"):
                     scalers[interval][name] = scaler
                     y_scalers[interval][name] = y_scaler
         else:
-            X = data[['Open', 'High', 'Low', 'SMA10']].values
+            X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10']].values
             for name in models[interval]:
                 if name not in scalers[interval] or not trained:
                     logger.info(f"Training {name} model for interval {interval}")
@@ -182,7 +183,7 @@ async def get_signal(interval: str = "5m"):
         
         if interval == '30m':
             data_1d = fetch_data('1d', 10)
-            X_1d = data_1d[['Open', 'High', 'Low', 'SMA10']].values
+            X_1d = data_1d[['Open', 'High', 'Low', 'SMA10', 'EMA10']].values
             y_1d = data_1d['Target'].values
             predictions_1d = []
             for name in models[interval]:
@@ -229,22 +230,20 @@ async def backtest(interval: str = "5m"):
             data_15m = fetch_data('15m', 10)
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
-            data = data.join(data_5m_resampled[['Open', 'High', 'Low']].add_suffix('_5m'), how='outer') \
-                      .join(data_15m_resampled[['Open', 'High', 'Low']].add_suffix('_15m'), how='outer')
+            data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'SMA10', 'EMA10']].add_suffix('_5m'), how='outer') \
+                      .join(data_15m_resampled[['Open', 'High', 'Low', 'SMA10', 'EMA10']].add_suffix('_15m'), how='outer')
             logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
             data = data.dropna()
             logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
-            X = data[['Open', 'High', 'Low', 'SMA10', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values[-11:-1]
-            if X.shape[1] != 10:
-                raise ValueError(f"Expected 10 features, got {X.shape[1]}: {data.columns.tolist()}")
+            X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m', 'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']].values[-11:-1]
             for name in models[interval]:
-                models[interval][name] = type(models[interval][name])(input_size=10)
+                models[interval][name] = type(models[interval][name])(input_size=15)
                 if name not in scalers[interval]:
                     _, scaler, y_scaler, _ = train_model(models[interval][name], X, data['Target'].values[-11:-1])
                     scalers[interval][name] = scaler
                     y_scalers[interval][name] = y_scaler
         else:
-            X = data[['Open', 'High', 'Low', 'SMA10']].values[-11:-1]
+            X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10']].values[-11:-1]
             for name in models[interval]:
                 if name not in scalers[interval]:
                     _, scaler, y_scaler, _ = train_model(models[interval][name], X, data['Target'].values[-11:-1])

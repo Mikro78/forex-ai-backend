@@ -77,8 +77,7 @@ def fetch_data(interval='5m', years=10):
         if data.empty:
             raise ValueError(f"No data returned for {ticker} with interval {interval}")
         data['Target'] = data['Close'].shift(-1)
-        # Debug: Check the shape and content of Close data
-        close_array = data['Close'].to_numpy().flatten()  # Ensure 1D array
+        close_array = data['Close'].to_numpy().flatten()
         logger.info(f"Close array shape: {close_array.shape}, first 5 values: {close_array[:5]}")
         if len(close_array) < 10:
             raise ValueError(f"Insufficient data for SMA: {len(close_array)} points, need at least 10")
@@ -136,8 +135,14 @@ async def get_signal(interval: str = "5m"):
             data_15m = fetch_data('15m', 10)
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
-            data = data.join(data_5m_resampled, rsuffix='_5m').join(data_15m_resampled, rsuffix='_15m').dropna()
+            data = data.join(data_5m_resampled[['Open', 'High', 'Low']].add_suffix('_5m'), how='outer') \
+                      .join(data_15m_resampled[['Open', 'High', 'Low']].add_suffix('_15m'), how='outer')
+            logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
+            data = data.dropna()
+            logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
             X = data[['Open', 'High', 'Low', 'SMA10', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values
+            if X.shape[1] != 10:
+                raise ValueError(f"Expected 10 features, got {X.shape[1]}: {data.columns.tolist()}")
             for name in models[interval]:
                 models[interval][name] = type(models[interval][name])(input_size=10)
                 if name not in scalers[interval] or not trained:
@@ -224,8 +229,14 @@ async def backtest(interval: str = "5m"):
             data_15m = fetch_data('15m', 10)
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
-            data = data.join(data_5m_resampled, rsuffix='_5m').join(data_15m_resampled, rsuffix='_15m').dropna()
+            data = data.join(data_5m_resampled[['Open', 'High', 'Low']].add_suffix('_5m'), how='outer') \
+                      .join(data_15m_resampled[['Open', 'High', 'Low']].add_suffix('_15m'), how='outer')
+            logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
+            data = data.dropna()
+            logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
             X = data[['Open', 'High', 'Low', 'SMA10', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m', 'Low_15m']].values[-11:-1]
+            if X.shape[1] != 10:
+                raise ValueError(f"Expected 10 features, got {X.shape[1]}: {data.columns.tolist()}")
             for name in models[interval]:
                 models[interval][name] = type(models[interval][name])(input_size=10)
                 if name not in scalers[interval]:

@@ -152,16 +152,22 @@ async def train():
                 # Синхронизиране на индексите
                 data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
                 data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
-                # Преименуване на колоните, за да избегнем конфликти
-                data_5m_resampled.columns = [f'{c}_5m' for c in data_5m_resampled.columns]
-                data_15m_resampled.columns = [f'{c}_15m' for c in data_15m_resampled.columns]
+                # Преименуване на колоните
+                data_5m_resampled.columns = [f'{c}_5m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_5m_resampled.columns]
+                data_15m_resampled.columns = [f'{c}_15m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_15m_resampled.columns]
+                # Join с избрани колони
                 data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='outer') \
                           .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='outer')
                 logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
                 data = data.dropna()
                 logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
-                X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m',
-                          'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']].values
+                # Проверка за присъствие на всички колони
+                expected_columns = ['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m',
+                                   'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']
+                missing_columns = [col for col in expected_columns if col not in data.columns]
+                if missing_columns:
+                    raise ValueError(f"Missing columns in data: {missing_columns}")
+                X = data[expected_columns].values
                 logger.info(f"X shape before training: {X.shape}")
                 if X.shape[1] != 15:
                     raise ValueError(f"Expected 15 features for 30m, got {X.shape[1]}: {data.columns.tolist()}")
@@ -202,15 +208,19 @@ async def get_signal(interval: str = "5m"):
             data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
             data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
             data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
-            data_5m_resampled.columns = [f'{c}_5m' for c in data_5m_resampled.columns]
-            data_15m_resampled.columns = [f'{c}_15m' for c in data_15m_resampled.columns]
+            data_5m_resampled.columns = [f'{c}_5m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_5m_resampled.columns]
+            data_15m_resampled.columns = [f'{c}_15m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_15m_resampled.columns]
             data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='outer') \
                       .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='outer')
             logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
             data = data.dropna()
             logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
-            X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m',
-                      'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']].values
+            expected_columns = ['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m',
+                               'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']
+            missing_columns = [col for col in expected_columns if col not in data.columns]
+            if missing_columns:
+                raise ValueError(f"Missing columns in data: {missing_columns}")
+            X = data[expected_columns].values
             logger.info(f"X shape before prediction: {X.shape}")
             if X.shape[1] != 15:
                 raise ValueError(f"Expected 15 features, got {X.shape[1]}: {data.columns.tolist()}")
@@ -307,13 +317,17 @@ async def backtest(interval: str = "5m", days: int = 30):
             data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
             data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
             data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
-            data_5m_resampled.columns = [f'{c}_5m' for c in data_5m_resampled.columns]
-            data_15m_resampled.columns = [f'{c}_15m' for c in data_15m_resampled.columns]
+            data_5m_resampled.columns = [f'{c}_5m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_5m_resampled.columns]
+            data_15m_resampled.columns = [f'{c}_15m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_15m_resampled.columns]
             data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='outer') \
                       .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='outer')
             data = data.dropna()
-            X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m',
-                      'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']].values
+            expected_columns = ['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m',
+                               'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']
+            missing_columns = [col for col in expected_columns if col not in data.columns]
+            if missing_columns:
+                raise ValueError(f"Missing columns in data: {missing_columns}")
+            X = data[expected_columns].values
         else:
             X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10']].values
         
@@ -357,8 +371,8 @@ async def get_chart_data(interval: str = "5m", days: int = 30):
             data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
             data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
             data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
-            data_5m_resampled.columns = [f'{c}_5m' for c in data_5m_resampled.columns]
-            data_15m_resampled.columns = [f'{c}_15m' for c in data_15m_resampled.columns]
+            data_5m_resampled.columns = [f'{c}_5m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_5m_resampled.columns]
+            data_15m_resampled.columns = [f'{c}_15m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_15m_resampled.columns]
             data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='outer') \
                       .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='outer')
             data = data.dropna()
@@ -405,15 +419,19 @@ async def retrain():
                 data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
                 data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
                 data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
-                data_5m_resampled.columns = [f'{c}_5m' for c in data_5m_resampled.columns]
-                data_15m_resampled.columns = [f'{c}_15m' for c in data_15m_resampled.columns]
+                data_5m_resampled.columns = [f'{c}_5m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_5m_resampled.columns]
+                data_15m_resampled.columns = [f'{c}_15m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_15m_resampled.columns]
                 data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='outer') \
                           .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='outer')
                 logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
                 data = data.dropna()
                 logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
-                X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m',
-                          'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']].values
+                expected_columns = ['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m',
+                                   'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']
+                missing_columns = [col for col in expected_columns if col not in data.columns]
+                if missing_columns:
+                    raise ValueError(f"Missing columns in data: {missing_columns}")
+                X = data[expected_columns].values
                 logger.info(f"X shape before retraining: {X.shape}")
                 if X.shape[1] != 15:
                     raise ValueError(f"Expected 15 features for 30m, got {X.shape[1]}: {data.columns.tolist()}")

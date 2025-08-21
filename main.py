@@ -141,15 +141,19 @@ async def train():
                 data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
                 data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
                 data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
-                data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'SMA10_5m', 'EMA10_5m']], how='outer') \
-                          .join(data_15m_resampled[['Open', 'High', 'Low', 'SMA10_15m', 'EMA10_15m']], how='outer')
+                data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_5m', 'EMA10_5m']], how='outer') \
+                          .join(data_15m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_15m', 'EMA10_15m']], how='outer')
+                logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
                 data = data.dropna()
+                logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
                 X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m',
                           'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']].values
+                logger.info(f"X shape before training: {X.shape}")
                 if X.shape[1] != 15:
-                    raise ValueError(f"Expected 15 features for 30m, got {X.shape[1]}")
+                    raise ValueError(f"Expected 15 features for 30m, got {X.shape[1]}: {data.columns.tolist()}")
             else:
                 X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10']].values
+                logger.info(f"X shape before training for {interval}: {X.shape}")
             for name in models[interval]:
                 logger.info(f"Training {name} model for interval {interval}")
                 model, scaler, y_scaler, train_time = train_model(models[interval][name], X[:-1], data['Target'].values[:-1])
@@ -178,14 +182,14 @@ async def get_signal(interval: str = "5m"):
             data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
             data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
             data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
-            data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'SMA10_5m', 'EMA10_5m']], how='outer') \
-                      .join(data_15m_resampled[['Open', 'High', 'Low', 'SMA10_15m', 'EMA10_15m']], how='outer')
+            data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_5m', 'EMA10_5m']], how='outer') \
+                      .join(data_15m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_15m', 'EMA10_15m']], how='outer')
             logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
             data = data.dropna()
             logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
             X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m',
                       'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']].values
-            logger.info(f"X shape before training/prediction: {X.shape}")
+            logger.info(f"X shape before prediction: {X.shape}")
             if X.shape[1] != 15:
                 raise ValueError(f"Expected 15 features, got {X.shape[1]}: {data.columns.tolist()}")
             if not trained:
@@ -275,8 +279,8 @@ async def backtest(interval: str = "5m", days: int = 30):
             data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
             data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
             data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
-            data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'SMA10_5m', 'EMA10_5m']], how='outer') \
-                      .join(data_15m_resampled[['Open', 'High', 'Low', 'SMA10_15m', 'EMA10_15m']], how='outer')
+            data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_5m', 'EMA10_5m']], how='outer') \
+                      .join(data_15m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_15m', 'EMA10_15m']], how='outer')
             data = data.dropna()
             X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m',
                       'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']].values
@@ -317,8 +321,8 @@ async def get_chart_data(interval: str = "5m", days: int = 30):
             data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
             data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
             data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
-            data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'SMA10_5m', 'EMA10_5m']], how='outer') \
-                      .join(data_15m_resampled[['Open', 'High', 'Low', 'SMA10_15m', 'EMA10_15m']], how='outer')
+            data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_5m', 'EMA10_5m']], how='outer') \
+                      .join(data_15m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_15m', 'EMA10_15m']], how='outer')
             data = data.dropna()
         chart_data = {
             'time': data.index.astype(str).tolist(),
@@ -357,15 +361,19 @@ async def retrain():
                 data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
                 data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
                 data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
-                data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'SMA10_5m', 'EMA10_5m']], how='outer') \
-                          .join(data_15m_resampled[['Open', 'High', 'Low', 'SMA10_15m', 'EMA10_15m']], how='outer')
+                data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_5m', 'EMA10_5m']], how='outer') \
+                          .join(data_15m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_15m', 'EMA10_15m']], how='outer')
+                logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
                 data = data.dropna()
+                logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
                 X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m',
                           'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']].values
+                logger.info(f"X shape before retraining: {X.shape}")
                 if X.shape[1] != 15:
-                    raise ValueError(f"Expected 15 features for 30m, got {X.shape[1]}")
+                    raise ValueError(f"Expected 15 features for 30m, got {X.shape[1]}: {data.columns.tolist()}")
             else:
                 X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10']].values
+                logger.info(f"X shape before retraining for {interval}: {X.shape}")
             for name in models[interval]:
                 logger.info(f"Retraining {name} model for interval {interval}")
                 model, scaler, y_scaler, train_time = train_model(models[interval][name], X[:-1], data['Target'].values[:-1])

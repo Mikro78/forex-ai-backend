@@ -137,12 +137,26 @@ async def train():
                 data_15m = fetch_data('15m', 10)
                 data_5m_resampled = data_5m.resample('30min').mean()
                 data_15m_resampled = data_15m.resample('30min').mean()
+                # Дебъгване на резамплените данни
+                logger.info(f"data_5m_resampled shape: {data_5m_resampled.shape}, head: {data_5m_resampled.head().to_dict()}")
+                logger.info(f"data_15m_resampled shape: {data_15m_resampled.shape}, head: {data_15m_resampled.head().to_dict()}")
+                # Проверка за достатъчно данни за SMA/EMA
+                if len(data_5m_resampled) < 10:
+                    raise ValueError(f"Insufficient data for 5m resampled: {len(data_5m_resampled)} points")
+                if len(data_15m_resampled) < 10:
+                    raise ValueError(f"Insufficient data for 15m resampled: {len(data_15m_resampled)} points")
                 data_5m_resampled['SMA10_5m'] = talib.SMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
                 data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
                 data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
                 data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
-                data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_5m', 'EMA10_5m']], how='outer') \
-                          .join(data_15m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_15m', 'EMA10_15m']], how='outer')
+                # Синхронизиране на индексите
+                data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
+                data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
+                # Преименуване на колоните, за да избегнем конфликти
+                data_5m_resampled.columns = [f'{c}_5m' for c in data_5m_resampled.columns]
+                data_15m_resampled.columns = [f'{c}_15m' for c in data_15m_resampled.columns]
+                data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='outer') \
+                          .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='outer')
                 logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
                 data = data.dropna()
                 logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
@@ -178,12 +192,20 @@ async def get_signal(interval: str = "5m"):
             data_15m = fetch_data('15m', 10)
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
+            if len(data_5m_resampled) < 10:
+                raise ValueError(f"Insufficient data for 5m resampled: {len(data_5m_resampled)} points")
+            if len(data_15m_resampled) < 10:
+                raise ValueError(f"Insufficient data for 15m resampled: {len(data_15m_resampled)} points")
             data_5m_resampled['SMA10_5m'] = talib.SMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
             data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
             data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
             data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
-            data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_5m', 'EMA10_5m']], how='outer') \
-                      .join(data_15m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_15m', 'EMA10_15m']], how='outer')
+            data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
+            data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
+            data_5m_resampled.columns = [f'{c}_5m' for c in data_5m_resampled.columns]
+            data_15m_resampled.columns = [f'{c}_15m' for c in data_15m_resampled.columns]
+            data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='outer') \
+                      .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='outer')
             logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
             data = data.dropna()
             logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
@@ -275,12 +297,20 @@ async def backtest(interval: str = "5m", days: int = 30):
             data_15m = fetch_data('15m', days / 365)
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
+            if len(data_5m_resampled) < 10:
+                raise ValueError(f"Insufficient data for 5m resampled: {len(data_5m_resampled)} points")
+            if len(data_15m_resampled) < 10:
+                raise ValueError(f"Insufficient data for 15m resampled: {len(data_15m_resampled)} points")
             data_5m_resampled['SMA10_5m'] = talib.SMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
             data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
             data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
             data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
-            data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_5m', 'EMA10_5m']], how='outer') \
-                      .join(data_15m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_15m', 'EMA10_15m']], how='outer')
+            data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
+            data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
+            data_5m_resampled.columns = [f'{c}_5m' for c in data_5m_resampled.columns]
+            data_15m_resampled.columns = [f'{c}_15m' for c in data_15m_resampled.columns]
+            data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='outer') \
+                      .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='outer')
             data = data.dropna()
             X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m',
                       'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']].values
@@ -317,12 +347,20 @@ async def get_chart_data(interval: str = "5m", days: int = 30):
             data_15m = fetch_data('15m', days / 365)
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
+            if len(data_5m_resampled) < 10:
+                raise ValueError(f"Insufficient data for 5m resampled: {len(data_5m_resampled)} points")
+            if len(data_15m_resampled) < 10:
+                raise ValueError(f"Insufficient data for 15m resampled: {len(data_15m_resampled)} points")
             data_5m_resampled['SMA10_5m'] = talib.SMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
             data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
             data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
             data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
-            data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_5m', 'EMA10_5m']], how='outer') \
-                      .join(data_15m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_15m', 'EMA10_15m']], how='outer')
+            data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
+            data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
+            data_5m_resampled.columns = [f'{c}_5m' for c in data_5m_resampled.columns]
+            data_15m_resampled.columns = [f'{c}_15m' for c in data_15m_resampled.columns]
+            data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='outer') \
+                      .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='outer')
             data = data.dropna()
         chart_data = {
             'time': data.index.astype(str).tolist(),
@@ -357,12 +395,20 @@ async def retrain():
                 data_15m = fetch_data('15m', 10)
                 data_5m_resampled = data_5m.resample('30min').mean()
                 data_15m_resampled = data_15m.resample('30min').mean()
+                if len(data_5m_resampled) < 10:
+                    raise ValueError(f"Insufficient data for 5m resampled: {len(data_5m_resampled)} points")
+                if len(data_15m_resampled) < 10:
+                    raise ValueError(f"Insufficient data for 15m resampled: {len(data_15m_resampled)} points")
                 data_5m_resampled['SMA10_5m'] = talib.SMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
                 data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
                 data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
                 data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
-                data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_5m', 'EMA10_5m']], how='outer') \
-                          .join(data_15m_resampled[['Open', 'High', 'Low', 'Close', 'SMA10_15m', 'EMA10_15m']], how='outer')
+                data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
+                data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
+                data_5m_resampled.columns = [f'{c}_5m' for c in data_5m_resampled.columns]
+                data_15m_resampled.columns = [f'{c}_15m' for c in data_15m_resampled.columns]
+                data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='outer') \
+                          .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='outer')
                 logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
                 data = data.dropna()
                 logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")

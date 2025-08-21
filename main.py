@@ -82,7 +82,7 @@ def fetch_data(interval='5m', years=10):
         if len(close_array) < 10:
             raise ValueError(f"Insufficient data for SMA/EMA: {len(close_array)} points, need at least 10")
         data['SMA10'] = talib.SMA(close_array, timeperiod=10)
-        data['EMA10'] = talib.EMA(close_array, timeperiod=10)  # Added EMA10 for noise filtering
+        data['EMA10'] = talib.EMA(close_array, timeperiod=10)
         data.dropna(inplace=True)
         logger.info(f"Data fetched successfully: {len(data)} rows after dropna")
         return data
@@ -90,7 +90,7 @@ def fetch_data(interval='5m', years=10):
         logger.error(f"Failed to fetch data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch data: {str(e)}")
 
-def train_model(model, X, y, epochs=100):  # Increased to 100 for better learning
+def train_model(model, X, y, epochs=100):
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
     X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)
@@ -116,7 +116,7 @@ trained = False
 last_email_time = {}
 
 for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
-    input_size = 5 if interval != '30m' else 11  # Added EMA10 to input_size
+    input_size = 5 if interval != '30m' else 15
     models[interval] = {
         'LSTM': LSTMModel(input_size=input_size),
         'GRU': GRUModel(input_size=input_size),
@@ -125,50 +125,87 @@ for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
     scalers[interval] = {}
     y_scalers[interval] = {}
 
+@app.post("/api/train")
+async def train():
+    global trained
+    try:
+        logger.info("Training started")
+        for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
+            data = fetch_data(interval, 10)
+            if interval == '30m':
+                data_5m = fetch_data('5m', 10)
+                data_15m = fetch_data('15m', 10)
+                data_5m_resampled = data_5m.resample('30min').mean()
+                data_15m_resampled = data_15m.resample('30min').mean()
+                data_5m_resampled['SMA10_5m'] = talib.SMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
+                data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
+                data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
+                data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
+                data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'SMA10_5m', 'EMA10_5m']], how='outer') \
+                          .join(data_15m_resampled[['Open', 'High', 'Low', 'SMA10_15m', 'EMA10_15m']], how='outer')
+                data = data.dropna()
+                X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m',
+                          'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']].values
+                if X.shape[1] != 15:
+                    raise ValueError(f"Expected 15 features for 30m, got {X.shape[1]}")
+            else:
+                X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10']].values
+            for name in models[interval]:
+                logger.info(f"Training {name} model for interval {interval}")
+                model, scaler, y_scaler, train_time = train_model(models[interval][name], X[:-1], data['Target'].values[:-1])
+                models[interval][name] = model
+                scalers[interval][name] = scaler
+                y_scalers[interval][name] = y_scaler
+        trained = True
+        logger.info("Training completed successfully")
+        return {"status": "Training completed", "trained": trained}
+    except Exception as e:
+        logger.error(f"Training failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Training failed: {str(e)}")
+
 @app.get("/api/signal")
 async def get_signal(interval: str = "5m"):
     global trained
     try:
-        logger.info(f"Processing signal for interval {interval}")
+        logger.info(f"Processing signal for interval {interval}, trained status: {trained}")
         data = fetch_data(interval, 10)
         if interval == '30m':
             data_5m = fetch_data('5m', 10)
             data_15m = fetch_data('15m', 10)
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
-            data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'SMA10', 'EMA10']].add_suffix('_5m'), how='outer') \
-                      .join(data_15m_resampled[['Open', 'High', 'Low', 'SMA10', 'EMA10']].add_suffix('_15m'), how='outer')
+            data_5m_resampled['SMA10_5m'] = talib.SMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
+            data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
+            data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
+            data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
+            data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'SMA10_5m', 'EMA10_5m']], how='outer') \
+                      .join(data_15m_resampled[['Open', 'High', 'Low', 'SMA10_15m', 'EMA10_15m']], how='outer')
             logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
             data = data.dropna()
             logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
-            X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m', 'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']].values
-            if X.shape[1] != 15:  # Adjusted to include all 15 features
+            X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m',
+                      'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']].values
+            logger.info(f"X shape before training/prediction: {X.shape}")
+            if X.shape[1] != 15:
                 raise ValueError(f"Expected 15 features, got {X.shape[1]}: {data.columns.tolist()}")
-            for name in models[interval]:
-                models[interval][name] = type(models[interval][name])(input_size=15)
-                if name not in scalers[interval] or not trained:
-                    logger.info(f"Training {name} model for interval {interval}")
-                    model, scaler, y_scaler, train_time = train_model(models[interval][name], X[:-1], data['Target'].values[:-1])
-                    models[interval][name] = model
-                    scalers[interval][name] = scaler
-                    y_scalers[interval][name] = y_scaler
+            if not trained:
+                raise ValueError("Models not trained, please call /api/train first")
         else:
             X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10']].values
-            for name in models[interval]:
-                if name not in scalers[interval] or not trained:
-                    logger.info(f"Training {name} model for interval {interval}")
-                    model, scaler, y_scaler, train_time = train_model(models[interval][name], X[:-1], data['Target'].values[:-1])
-                    models[interval][name] = model
-                    scalers[interval][name] = scaler
-                    y_scalers[interval][name] = y_scaler
+            logger.info(f"X shape for {interval}: {X.shape}")
+            if not trained:
+                raise ValueError("Models not trained, please call /api/train first")
         
         predictions = []
         for name, model in models[interval].items():
-            last_input = scalers[interval][name].transform(X[-1].reshape(1, -1))
-            last_input_tensor = torch.tensor(last_input).float().unsqueeze(1)
+            last_input = X[-1].reshape(1, -1)
+            logger.info(f"Raw input shape for {name}: {last_input.shape}")
+            last_input_scaled = scalers[interval][name].transform(last_input)
+            logger.info(f"Transformed input shape for {name}: {last_input_scaled.shape}")
+            last_input_tensor = torch.tensor(last_input_scaled).float().unsqueeze(1)
             pred_normalized = model(last_input_tensor).item()
             pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
-            predictions.append({'name': name, 'rate': pred, 'train_time': train_time if 'train_time' in locals() else 0.0})
+            predictions.append({'name': name, 'rate': pred, 'train_time': latest_predictions.get(interval, {}).get('train_time', 0.0)})
             logger.info(f"{name} prediction: {pred}")
         
         last_close = data['Close'].iloc[-1].item()
@@ -177,7 +214,7 @@ async def get_signal(interval: str = "5m"):
             'last_close': last_close,
             'timestamp': datetime.now().isoformat(),
             'actual': None,
-            'train_time': predictions[0]['train_time'],
+            'train_time': latest_predictions.get(interval, {}).get('train_time', 0.0),
             'mse': 0.0001
         }
         
@@ -187,8 +224,9 @@ async def get_signal(interval: str = "5m"):
             y_1d = data_1d['Target'].values
             predictions_1d = []
             for name in models[interval]:
-                last_input_1d = scalers[interval][name].transform(X_1d[-1].reshape(1, -1))
-                last_input_tensor_1d = torch.tensor(last_input_1d).float().unsqueeze(1)
+                last_input_1d = X_1d[-1].reshape(1, -1)
+                last_input_1d_scaled = scalers[interval][name].transform(last_input_1d)
+                last_input_tensor_1d = torch.tensor(last_input_1d_scaled).float().unsqueeze(1)
                 pred_normalized_1d = model(last_input_tensor_1d).item()
                 pred_1d = y_scalers[interval][name].inverse_transform([[pred_normalized_1d]])[0][0]
                 predictions_1d.append({'name': name, 'rate': pred_1d})
@@ -221,133 +259,236 @@ async def get_signal(interval: str = "5m"):
         raise HTTPException(status_code=500, detail=f"Error processing signal: {str(e)}")
 
 @app.get("/api/backtest")
-async def backtest(interval: str = "5m"):
+async def backtest(interval: str = "5m", days: int = 30):
+    global trained
     try:
-        logger.info(f"Processing backtest for interval {interval}")
-        data = fetch_data(interval, 10)
+        logger.info(f"Backtesting for interval {interval}, days {days}, trained status: {trained}")
+        if not trained:
+            raise ValueError("Models not trained, please call /api/train first")
+        data = fetch_data(interval, days / 365)
         if interval == '30m':
-            data_5m = fetch_data('5m', 10)
-            data_15m = fetch_data('15m', 10)
+            data_5m = fetch_data('5m', days / 365)
+            data_15m = fetch_data('15m', days / 365)
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
-            data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'SMA10', 'EMA10']].add_suffix('_5m'), how='outer') \
-                      .join(data_15m_resampled[['Open', 'High', 'Low', 'SMA10', 'EMA10']].add_suffix('_15m'), how='outer')
-            logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
+            data_5m_resampled['SMA10_5m'] = talib.SMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
+            data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
+            data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
+            data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
+            data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'SMA10_5m', 'EMA10_5m']], how='outer') \
+                      .join(data_15m_resampled[['Open', 'High', 'Low', 'SMA10_15m', 'EMA10_15m']], how='outer')
             data = data.dropna()
-            logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
-            X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m', 'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']].values[-11:-1]
-            for name in models[interval]:
-                models[interval][name] = type(models[interval][name])(input_size=15)
-                if name not in scalers[interval]:
-                    _, scaler, y_scaler, _ = train_model(models[interval][name], X, data['Target'].values[-11:-1])
-                    scalers[interval][name] = scaler
-                    y_scalers[interval][name] = y_scaler
+            X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m',
+                      'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']].values
         else:
-            X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10']].values[-11:-1]
-            for name in models[interval]:
-                if name not in scalers[interval]:
-                    _, scaler, y_scaler, _ = train_model(models[interval][name], X, data['Target'].values[-11:-1])
-                    scalers[interval][name] = scaler
-                    y_scalers[interval][name] = y_scaler
+            X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10']].values
         
-        y = data['Target'].values[-11:-1]
-        backtest_results = {}
-        for name in models[interval]:
-            predictions = []
-            for i in range(len(X)):
-                last_input = scalers[interval][name].transform(X[i].reshape(1, -1))
-                last_input_tensor = torch.tensor(last_input).float().unsqueeze(1)
-                pred_normalized = models[interval][name](last_input_tensor).item()
-                pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
-                actual = y[i]
-                direction_pred = "Buy" if pred > data['Close'].iloc[-11+i].item() else "Sell"
-                direction_actual = "Buy" if actual > data['Close'].iloc[-11+i].item() else "Sell"
-                success = direction_pred == direction_actual
-                predictions.append({
-                    'time': data.index[-11+i].isoformat(),
-                    'predicted': pred,
-                    'actual': actual,
-                    'direction_pred': direction_pred,
-                    'direction_actual': direction_actual,
-                    'success': success
-                })
-            backtest_results[name] = predictions
-        return {'backtest_results': backtest_results}
-    except Exception as e:
-        logger.error(f"Error in backtest: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error in backtest: {str(e)}")
-
-@app.get("/api/chart")
-async def get_chart(interval: str = "5m"):
-    try:
-        data = fetch_data(interval, 10)
+        predictions = []
+        actuals = data['Target'].values[1:]
+        for name, model in models[interval].items():
+            scaled_X = scalers[interval][name].transform(X)
+            X_tensor = torch.tensor(scaled_X).float().unsqueeze(1)
+            preds_normalized = model(X_tensor).detach().numpy().squeeze()
+            preds = y_scalers[interval][name].inverse_transform(preds_normalized.reshape(-1, 1)).squeeze()
+            mse = np.mean((preds[:-1] - actuals) ** 2) if len(actuals) > 0 else 0.0
+            predictions.append({'name': name, 'predictions': preds.tolist(), 'mse': mse})
+            logger.info(f"{name} backtest MSE: {mse}")
+        
         return {
-            'prices': data['Close'].tail(100).to_dict(),
-            'predictions': {k: v['predictions'] for k, v in latest_predictions.items() if k == interval}
+            'predictions': predictions,
+            'actuals': actuals.tolist(),
+            'timestamp': datetime.now().isoformat()
         }
     except Exception as e:
-        logger.error(f"Error fetching chart data: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error fetching chart data: {str(e)}")
+        logger.error(f"Backtest failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Backtest failed: {str(e)}")
 
-@app.get("/api/models")
-async def get_models():
-    return {
-        'models': [
-            {'name': 'NARX+EMD', 'accuracy': 94.2, 'train_time': latest_predictions.get('5m', {}).get('train_time', 2.3), 'mae': 0.0012, 'predictions': 1247, 'best': True},
-            {'name': 'LSTM', 'accuracy': 91.8, 'train_time': latest_predictions.get('5m', {}).get('train_time', 4.1), 'mae': 0.0018, 'predictions': 1247},
-            {'name': 'GRU', 'accuracy': 90.5, 'train_time': latest_predictions.get('5m', {}).get('train_time', 3.2), 'mae': 0.0021, 'predictions': 1247}
-        ]
-    }
-
-@app.post("/api/train")
-async def train():
-    global trained
-    trained = True
-    logger.info("Training started")
-    return {'status': 'Training started'}
+@app.get("/api/chart")
+async def get_chart_data(interval: str = "5m", days: int = 30):
+    try:
+        logger.info(f"Fetching chart data for interval {interval}, days {days}")
+        data = fetch_data(interval, days / 365)
+        if interval == '30m':
+            data_5m = fetch_data('5m', days / 365)
+            data_15m = fetch_data('15m', days / 365)
+            data_5m_resampled = data_5m.resample('30min').mean()
+            data_15m_resampled = data_15m.resample('30min').mean()
+            data_5m_resampled['SMA10_5m'] = talib.SMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
+            data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
+            data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
+            data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
+            data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'SMA10_5m', 'EMA10_5m']], how='outer') \
+                      .join(data_15m_resampled[['Open', 'High', 'Low', 'SMA10_15m', 'EMA10_15m']], how='outer')
+            data = data.dropna()
+        chart_data = {
+            'time': data.index.astype(str).tolist(),
+            'open': data['Open'].tolist(),
+            'high': data['High'].tolist(),
+            'low': data['Low'].tolist(),
+            'close': data['Close'].tolist(),
+            'sma10': data['SMA10'].tolist(),
+            'ema10': data['EMA10'].tolist()
+        }
+        if interval == '30m':
+            chart_data.update({
+                'sma10_5m': data['SMA10_5m'].tolist(),
+                'ema10_5m': data['EMA10_5m'].tolist(),
+                'sma10_15m': data['SMA10_15m'].tolist(),
+                'ema10_15m': data['EMA10_15m'].tolist()
+            })
+        return chart_data
+    except Exception as e:
+        logger.error(f"Chart data fetch failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Chart data fetch failed: {str(e)}")
 
 @app.post("/api/retrain")
 async def retrain():
     global trained
-    trained = False
-    logger.info("Retraining started")
-    return {'status': 'Retraining started'}
+    try:
+        logger.info("Retraining started")
+        for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
+            data = fetch_data(interval, 10)
+            if interval == '30m':
+                data_5m = fetch_data('5m', 10)
+                data_15m = fetch_data('15m', 10)
+                data_5m_resampled = data_5m.resample('30min').mean()
+                data_15m_resampled = data_15m.resample('30min').mean()
+                data_5m_resampled['SMA10_5m'] = talib.SMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
+                data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
+                data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
+                data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
+                data = data.join(data_5m_resampled[['Open', 'High', 'Low', 'SMA10_5m', 'EMA10_5m']], how='outer') \
+                          .join(data_15m_resampled[['Open', 'High', 'Low', 'SMA10_15m', 'EMA10_15m']], how='outer')
+                data = data.dropna()
+                X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m',
+                          'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']].values
+                if X.shape[1] != 15:
+                    raise ValueError(f"Expected 15 features for 30m, got {X.shape[1]}")
+            else:
+                X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10']].values
+            for name in models[interval]:
+                logger.info(f"Retraining {name} model for interval {interval}")
+                model, scaler, y_scaler, train_time = train_model(models[interval][name], X[:-1], data['Target'].values[:-1])
+                models[interval][name] = model
+                scalers[interval][name] = scaler
+                y_scalers[interval][name] = y_scaler
+        trained = True
+        logger.info("Retraining completed successfully")
+        return {"status": "Retraining completed", "trained": trained}
+    except Exception as e:
+        logger.error(f"Retraining failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Retraining failed: {str(e)}")
+
+@app.get("/api/models")
+async def get_models():
+    try:
+        logger.info("Fetching model details")
+        model_details = {}
+        for interval in models:
+            model_details[interval] = {
+                'models': list(models[interval].keys()),
+                'input_size': next(iter(models[interval].values())).lstm.input_size if 'LSTM' in models[interval] else next(iter(models[interval].values())).gru.input_size
+            }
+        return model_details
+    except Exception as e:
+        logger.error(f"Failed to fetch model details: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch model details: {str(e)}")
 
 @app.post("/api/notify/email")
-async def add_email(data: dict):
-    logger.info(f"Adding email: {data['email']}")
-    return {'status': f'Email {data["email"]} added'}
+async def notify_email():
+    global trained
+    try:
+        if not trained:
+            raise ValueError("Models not trained, please call /api/train first")
+        current_time = time.time()
+        if not last_email_time.get('manual') or (current_time - last_email_time.get('manual', 0) >= 300):
+            for interval in ['5m']:
+                data = fetch_data(interval, 10)
+                X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10']].values
+                predictions = []
+                for name, model in models[interval].items():
+                    last_input = X[-1].reshape(1, -1)
+                    last_input_scaled = scalers[interval][name].transform(last_input)
+                    last_input_tensor = torch.tensor(last_input_scaled).float().unsqueeze(1)
+                    pred_normalized = model(last_input_tensor).item()
+                    pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
+                    predictions.append({'name': name, 'rate': pred})
+                last_close = data['Close'].iloc[-1].item()
+                pred_rates = ', '.join([f"{p['name']}: {p['rate']:.5f}" for p in predictions])
+                gmail_user = os.getenv('GMAIL_USER')
+                gmail_pass = os.getenv('GMAIL_PASS')
+                if gmail_user and gmail_pass:
+                    msg = MIMEText(f"Manual FOREX Signal for {interval}: Predictions - {pred_rates}, Last Close: {last_close:.5f}")
+                    msg['Subject'] = 'Manual AI Forex Signal'
+                    msg['From'] = gmail_user
+                    msg['To'] = 'mironedv@abv.bg'
+                    with smtplib.SMTP('smtp.gmail.com', 587) as server:
+                        server.starttls()
+                        server.login(gmail_user, gmail_pass)
+                        server.send_message(msg)
+                    logger.info("Manual email sent successfully to mironedv@abv.bg")
+                    last_email_time['manual'] = current_time
+                else:
+                    logger.error("GMAIL_USER or GMAIL_PASS not set in environment")
+                    raise ValueError("Email credentials not configured")
+            return {"status": "Email notification sent"}
+        else:
+            logger.warning("Email cooldown active, please wait")
+            raise HTTPException(status_code=429, detail="Email cooldown active, please wait 5 minutes")
+    except Exception as e:
+        logger.error(f"Email notification failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Email notification failed: {str(e)}")
 
 @app.post("/api/notify/whatsapp")
-async def add_whatsapp(data: dict):
+async def notify_whatsapp():
+    global trained
     try:
-        client = Client(os.getenv('TWILIO_SID'), os.getenv('TWILIO_TOKEN'))
-        client.messages.create(
-            body=f"FOREX AI: Notifications enabled for {data['number']}",
-            from_='whatsapp:+14155238886',
-            to=f'whatsapp:{data["number"]}'
-        )
-        logger.info(f"WhatsApp notification enabled for {data['number']}")
-        return {'status': f'WhatsApp {data["number"]} added'}
+        if not trained:
+            raise ValueError("Models not trained, please call /api/train first")
+        account_sid = os.getenv('TWILIO_ACCOUNT_SID')
+        auth_token = os.getenv('TWILIO_AUTH_TOKEN')
+        twilio_phone = os.getenv('TWILIO_PHONE')
+        target_phone = os.getenv('TARGET_PHONE')
+        if not all([account_sid, auth_token, twilio_phone, target_phone]):
+            logger.error("Twilio credentials not set in environment")
+            raise ValueError("Twilio credentials not configured")
+        client = Client(account_sid, auth_token)
+        for interval in ['5m']:
+            data = fetch_data(interval, 10)
+            X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10']].values
+            predictions = []
+            for name, model in models[interval].items():
+                last_input = X[-1].reshape(1, -1)
+                last_input_scaled = scalers[interval][name].transform(last_input)
+                last_input_tensor = torch.tensor(last_input_scaled).float().unsqueeze(1)
+                pred_normalized = model(last_input_tensor).item()
+                pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
+                predictions.append({'name': name, 'rate': pred})
+            last_close = data['Close'].iloc[-1].item()
+            pred_rates = ', '.join([f"{p['name']}: {p['rate']:.5f}" for p in predictions])
+            message = client.messages.create(
+                body=f"Manual FOREX Signal for {interval}: Predictions - {pred_rates}, Last Close: {last_close:.5f}",
+                from_=twilio_phone,
+                to=target_phone
+            )
+            logger.info(f"WhatsApp notification sent, SID: {message.sid}")
+        return {"status": "WhatsApp notification sent", "message_sid": message.sid}
     except Exception as e:
         logger.error(f"WhatsApp notification failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"WhatsApp notification failed: {str(e)}")
 
 def run_scheduler():
-    async def update_predictions():
-        for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
-            try:
-                logger.info(f"Running scheduled prediction for interval {interval}")
-                await get_signal(interval)
-            except Exception as e:
-                logger.error(f"Scheduled prediction failed for {interval}: {str(e)}")
-    def schedule_loop():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        schedule.every(5).minutes.do(lambda: loop.run_until_complete(update_predictions()))
-        while True:
-            schedule.run_pending()
-            time.sleep(1)
-    Thread(target=schedule_loop, daemon=True).start()
+    def job():
+        logger.info("Scheduler job triggered")
+        asyncio.run(get_signal(interval="5m"))
+    
+    schedule.every(5).minutes.do(job)
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
 
-run_scheduler()
+if __name__ == "__main__":
+    scheduler_thread = Thread(target=run_scheduler, daemon=True)
+    scheduler_thread.start()
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -137,27 +137,31 @@ async def train():
                 data_15m = fetch_data('15m', 10)
                 data_5m_resampled = data_5m.resample('30min').mean()
                 data_15m_resampled = data_15m.resample('30min').mean()
-                # Дебъгване на резамплените данни
+                # Дебъгване и валидация на резамплените данни
+                if data_5m_resampled.empty or data_15m_resampled.empty:
+                    raise ValueError("Resampled data is empty for 5m or 15m")
                 logger.info(f"data_5m_resampled shape: {data_5m_resampled.shape}, head: {data_5m_resampled.head().to_dict()}")
                 logger.info(f"data_15m_resampled shape: {data_15m_resampled.shape}, head: {data_15m_resampled.head().to_dict()}")
                 # Проверка за достатъчно данни за SMA/EMA
-                if len(data_5m_resampled) < 10:
-                    raise ValueError(f"Insufficient data for 5m resampled: {len(data_5m_resampled)} points")
-                if len(data_15m_resampled) < 10:
-                    raise ValueError(f"Insufficient data for 15m resampled: {len(data_15m_resampled)} points")
+                if len(data_5m_resampled) < 10 or len(data_15m_resampled) < 10:
+                    raise ValueError(f"Insufficient resampled data: 5m={len(data_5m_resampled)}, 15m={len(data_15m_resampled)}")
                 data_5m_resampled['SMA10_5m'] = talib.SMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
                 data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
                 data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
                 data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
-                # Синхронизиране на индексите
-                data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
-                data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
+                # Синхронизиране на индексите с допълнителна валидация
+                common_index = data.index.intersection(data_5m_resampled.index).intersection(data_15m_resampled.index)
+                if len(common_index) == 0:
+                    raise ValueError("No overlapping indices after reindexing")
+                data = data.loc[common_index]
+                data_5m_resampled = data_5m_resampled.loc[common_index]
+                data_15m_resampled = data_15m_resampled.loc[common_index]
                 # Преименуване на колоните
                 data_5m_resampled.columns = [f'{c}_5m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_5m_resampled.columns]
                 data_15m_resampled.columns = [f'{c}_15m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_15m_resampled.columns]
-                # Join с избрани колони
-                data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='outer') \
-                          .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='outer')
+                # Join с избрани колони и how='left'
+                data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='left') \
+                          .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='left')
                 logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
                 data = data.dropna()
                 logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
@@ -198,20 +202,24 @@ async def get_signal(interval: str = "5m"):
             data_15m = fetch_data('15m', 10)
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
-            if len(data_5m_resampled) < 10:
-                raise ValueError(f"Insufficient data for 5m resampled: {len(data_5m_resampled)} points")
-            if len(data_15m_resampled) < 10:
-                raise ValueError(f"Insufficient data for 15m resampled: {len(data_15m_resampled)} points")
+            if data_5m_resampled.empty or data_15m_resampled.empty:
+                raise ValueError("Resampled data is empty for 5m or 15m")
+            if len(data_5m_resampled) < 10 or len(data_15m_resampled) < 10:
+                raise ValueError(f"Insufficient resampled data: 5m={len(data_5m_resampled)}, 15m={len(data_15m_resampled)}")
             data_5m_resampled['SMA10_5m'] = talib.SMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
             data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
             data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
             data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
-            data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
-            data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
+            common_index = data.index.intersection(data_5m_resampled.index).intersection(data_15m_resampled.index)
+            if len(common_index) == 0:
+                raise ValueError("No overlapping indices after reindexing")
+            data = data.loc[common_index]
+            data_5m_resampled = data_5m_resampled.loc[common_index]
+            data_15m_resampled = data_15m_resampled.loc[common_index]
             data_5m_resampled.columns = [f'{c}_5m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_5m_resampled.columns]
             data_15m_resampled.columns = [f'{c}_15m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_15m_resampled.columns]
-            data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='outer') \
-                      .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='outer')
+            data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='left') \
+                      .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='left')
             logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
             data = data.dropna()
             logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
@@ -307,20 +315,24 @@ async def backtest(interval: str = "5m", days: int = 30):
             data_15m = fetch_data('15m', days / 365)
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
-            if len(data_5m_resampled) < 10:
-                raise ValueError(f"Insufficient data for 5m resampled: {len(data_5m_resampled)} points")
-            if len(data_15m_resampled) < 10:
-                raise ValueError(f"Insufficient data for 15m resampled: {len(data_15m_resampled)} points")
+            if data_5m_resampled.empty or data_15m_resampled.empty:
+                raise ValueError("Resampled data is empty for 5m or 15m")
+            if len(data_5m_resampled) < 10 or len(data_15m_resampled) < 10:
+                raise ValueError(f"Insufficient resampled data: 5m={len(data_5m_resampled)}, 15m={len(data_15m_resampled)}")
             data_5m_resampled['SMA10_5m'] = talib.SMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
             data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
             data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
             data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
-            data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
-            data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
+            common_index = data.index.intersection(data_5m_resampled.index).intersection(data_15m_resampled.index)
+            if len(common_index) == 0:
+                raise ValueError("No overlapping indices after reindexing")
+            data = data.loc[common_index]
+            data_5m_resampled = data_5m_resampled.loc[common_index]
+            data_15m_resampled = data_15m_resampled.loc[common_index]
             data_5m_resampled.columns = [f'{c}_5m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_5m_resampled.columns]
             data_15m_resampled.columns = [f'{c}_15m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_15m_resampled.columns]
-            data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='outer') \
-                      .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='outer')
+            data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='left') \
+                      .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='left')
             data = data.dropna()
             expected_columns = ['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m',
                                'Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']
@@ -361,20 +373,24 @@ async def get_chart_data(interval: str = "5m", days: int = 30):
             data_15m = fetch_data('15m', days / 365)
             data_5m_resampled = data_5m.resample('30min').mean()
             data_15m_resampled = data_15m.resample('30min').mean()
-            if len(data_5m_resampled) < 10:
-                raise ValueError(f"Insufficient data for 5m resampled: {len(data_5m_resampled)} points")
-            if len(data_15m_resampled) < 10:
-                raise ValueError(f"Insufficient data for 15m resampled: {len(data_15m_resampled)} points")
+            if data_5m_resampled.empty or data_15m_resampled.empty:
+                raise ValueError("Resampled data is empty for 5m or 15m")
+            if len(data_5m_resampled) < 10 or len(data_15m_resampled) < 10:
+                raise ValueError(f"Insufficient resampled data: 5m={len(data_5m_resampled)}, 15m={len(data_15m_resampled)}")
             data_5m_resampled['SMA10_5m'] = talib.SMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
             data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
             data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
             data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
-            data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
-            data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
+            common_index = data.index.intersection(data_5m_resampled.index).intersection(data_15m_resampled.index)
+            if len(common_index) == 0:
+                raise ValueError("No overlapping indices after reindexing")
+            data = data.loc[common_index]
+            data_5m_resampled = data_5m_resampled.loc[common_index]
+            data_15m_resampled = data_15m_resampled.loc[common_index]
             data_5m_resampled.columns = [f'{c}_5m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_5m_resampled.columns]
             data_15m_resampled.columns = [f'{c}_15m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_15m_resampled.columns]
-            data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='outer') \
-                      .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='outer')
+            data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='left') \
+                      .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='left')
             data = data.dropna()
         chart_data = {
             'time': data.index.astype(str).tolist(),
@@ -409,20 +425,24 @@ async def retrain():
                 data_15m = fetch_data('15m', 10)
                 data_5m_resampled = data_5m.resample('30min').mean()
                 data_15m_resampled = data_15m.resample('30min').mean()
-                if len(data_5m_resampled) < 10:
-                    raise ValueError(f"Insufficient data for 5m resampled: {len(data_5m_resampled)} points")
-                if len(data_15m_resampled) < 10:
-                    raise ValueError(f"Insufficient data for 15m resampled: {len(data_15m_resampled)} points")
+                if data_5m_resampled.empty or data_15m_resampled.empty:
+                    raise ValueError("Resampled data is empty for 5m or 15m")
+                if len(data_5m_resampled) < 10 or len(data_15m_resampled) < 10:
+                    raise ValueError(f"Insufficient resampled data: 5m={len(data_5m_resampled)}, 15m={len(data_15m_resampled)}")
                 data_5m_resampled['SMA10_5m'] = talib.SMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
                 data_5m_resampled['EMA10_5m'] = talib.EMA(data_5m_resampled['Close'].to_numpy(), timeperiod=10)
                 data_15m_resampled['SMA10_15m'] = talib.SMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
                 data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close'].to_numpy(), timeperiod=10)
-                data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
-                data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
+                common_index = data.index.intersection(data_5m_resampled.index).intersection(data_15m_resampled.index)
+                if len(common_index) == 0:
+                    raise ValueError("No overlapping indices after reindexing")
+                data = data.loc[common_index]
+                data_5m_resampled = data_5m_resampled.loc[common_index]
+                data_15m_resampled = data_15m_resampled.loc[common_index]
                 data_5m_resampled.columns = [f'{c}_5m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_5m_resampled.columns]
                 data_15m_resampled.columns = [f'{c}_15m' if c in ['Open', 'High', 'Low', 'Close', 'SMA10', 'EMA10'] else c for c in data_15m_resampled.columns]
-                data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='outer') \
-                          .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='outer')
+                data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='left') \
+                          .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='left')
                 logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
                 data = data.dropna()
                 logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
@@ -517,34 +537,35 @@ async def notify_whatsapp():
     try:
         if not trained:
             raise ValueError("Models not trained, please call /api/train first")
-        account_sid = os.getenv('TWILIO_ACCOUNT_SID')
-        auth_token = os.getenv('TWILIO_AUTH_TOKEN')
-        twilio_phone = os.getenv('TWILIO_PHONE')
-        target_phone = os.getenv('TARGET_PHONE')
-        if not all([account_sid, auth_token, twilio_phone, target_phone]):
-            logger.error("Twilio credentials not set in environment")
-            raise ValueError("Twilio credentials not configured")
-        client = Client(account_sid, auth_token)
-        for interval in ['5m']:
-            data = fetch_data(interval, 10)
-            X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10']].values
-            predictions = []
-            for name, model in models[interval].items():
-                last_input = X[-1].reshape(1, -1)
-                last_input_scaled = scalers[interval][name].transform(last_input)
-                last_input_tensor = torch.tensor(last_input_scaled).float().unsqueeze(1)
-                pred_normalized = model(last_input_tensor).item()
-                pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
-                predictions.append({'name': name, 'rate': pred})
-            last_close = data['Close'].iloc[-1].item()
-            pred_rates = ', '.join([f"{p['name']}: {p['rate']:.5f}" for p in predictions])
-            message = client.messages.create(
-                body=f"Manual FOREX Signal for {interval}: Predictions - {pred_rates}, Last Close: {last_close:.5f}",
-                from_=twilio_phone,
-                to=target_phone
-            )
-            logger.info(f"WhatsApp notification sent, SID: {message.sid}")
-        return {"status": "WhatsApp notification sent", "message_sid": message.sid}
+        current_time = time.time()
+        if not last_email_time.get('whatsapp') or (current_time - last_email_time.get('whatsapp', 0) >= 300):
+            for interval in ['5m']:
+                data = fetch_data(interval, 10)
+                X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10']].values
+                predictions = []
+                for name, model in models[interval].items():
+                    last_input = X[-1].reshape(1, -1)
+                    last_input_scaled = scalers[interval][name].transform(last_input)
+                    last_input_tensor = torch.tensor(last_input_scaled).float().unsqueeze(1)
+                    pred_normalized = model(last_input_tensor).item()
+                    pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
+                    predictions.append({'name': name, 'rate': pred})
+                last_close = data['Close'].iloc[-1].item()
+                pred_rates = ', '.join([f"{p['name']}: {p['rate']:.5f}" for p in predictions])
+                account_sid = os.getenv('TWILIO_ACCOUNT_SID')
+                auth_token = os.getenv('TWILIO_AUTH_TOKEN')
+                client = Client(account_sid, auth_token)
+                message = client.messages.create(
+                    body=f"Manual FOREX Signal for {interval}: Predictions - {pred_rates}, Last Close: {last_close:.5f}",
+                    from_='whatsapp:' + os.getenv('TWILIO_PHONE_NUMBER'),
+                    to='whatsapp:' + os.getenv('WHATSAPP_RECIPIENT')
+                )
+                logger.info(f"WhatsApp message sent, SID: {message.sid}")
+                last_email_time['whatsapp'] = current_time
+            return {"status": "WhatsApp notification sent"}
+        else:
+            logger.warning("WhatsApp cooldown active, please wait")
+            raise HTTPException(status_code=429, detail="WhatsApp cooldown active, please wait 5 minutes")
     except Exception as e:
         logger.error(f"WhatsApp notification failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"WhatsApp notification failed: {str(e)}")

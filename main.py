@@ -27,6 +27,18 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
+# Настройка на периодично изпълнение всеки час
+schedule.every(1).hours.do(run_prediction)
+
+# Функция за работа на schedule в отделен поток
+def run_scheduler():
+    while True:
+        schedule.run_pending()
+        time.sleep(60)  # Проверка на задачите всеки 60 секунди
+
+import threading
+scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+scheduler_thread.start()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

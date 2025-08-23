@@ -74,7 +74,7 @@ def fetch_data(interval='5m', years=10):
     logger.info(f"Fetching data for {ticker} with interval {interval} from {start} to {end}")
     try:
         data = yf.download(ticker, start=start, end=end, interval=interval, progress=False, auto_adjust=False)
-        data.columns = [col[1] if col[1] else col[0] for col in data.columns]  # Почистване на имената на колоните
+        data.columns = data.columns.get_level_values(0)  # Flatten multi-index columns
         if data.empty:
             raise ValueError(f"No data returned for {ticker} with interval {interval}")
         data['Target'] = data['Close'].shift(-1)
@@ -144,8 +144,8 @@ async def train():
                 data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close_15m'].to_numpy(), timeperiod=10)
                 data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
                 data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
-                data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m']], how='left') \
-                          .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']], how='left')
+                data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='left') \
+                          .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='left')
                 logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
                 data = data.dropna()
                 logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
@@ -186,12 +186,13 @@ async def get_signal(interval: str = "5m"):
             data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close_15m'].to_numpy(), timeperiod=10)
             data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
             data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
-            data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m']], how='left') \
-                      .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']], how='left')
+            data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='left') \
+                      .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='left')
             logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
+            original_rows = len(data)
             data = data.dropna()
-            logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
-            # Проверка на наличността на всички колони
+            logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}, rows dropped: {original_rows - len(data)}")
+            # Проверка на наличността на всички необходими колони
             required_columns = ['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m']
             missing_columns = [col for col in required_columns if col not in data.columns]
             if missing_columns:
@@ -237,8 +238,13 @@ async def get_signal(interval: str = "5m"):
             predictions_1d = []
             for name in models[interval]:
                 last_input_1d = X_1d[-1].reshape(1, -1)
-                last_input_1d_scaled = scalers[interval][name].transform(last_input_1d)
+                temp_scaler = MinMaxScaler()
+                temp_scaler.fit(last_input_1d)
+                last_input_1d_scaled = temp_scaler.transform(last_input_1d)
                 last_input_tensor_1d = torch.tensor(last_input_1d_scaled).float().unsqueeze(1)
+                # Добавяне на dummy features, за да съответства на 10 колони
+                dummy = np.zeros((last_input_tensor_1d.shape[0], last_input_tensor_1d.shape[1], 5))
+                last_input_tensor_1d = torch.cat((last_input_tensor_1d, torch.tensor(dummy).float()), dim=2)
                 pred_normalized_1d = model(last_input_tensor_1d).item()
                 pred_1d = y_scalers[interval][name].inverse_transform([[pred_normalized_1d]])[0][0]
                 predictions_1d.append({'name': name, 'rate': pred_1d})

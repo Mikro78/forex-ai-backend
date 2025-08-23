@@ -17,6 +17,8 @@ import os
 import asyncio
 import logging
 import talib
+from sklearn.ensemble import RandomForestRegressor
+from statsmodels.tsa.arima.model import ARIMA
 
 # Настройка на логове за дебъг
 logging.basicConfig(level=logging.INFO)
@@ -26,7 +28,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://forex-ai-dashboard.vercel.app", "http://localhost:3000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -43,6 +45,46 @@ class LSTMModel(nn.Module):
         out = self.fc(out[:, -1, :])
         return out
 
+class BiLSTMModel(nn.Module):
+    def __init__(self, input_size=3, hidden_size=50, output_size=1):
+        super().__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size, batch_first=True, bidirectional=True)
+        self.fc = nn.Linear(hidden_size * 2, output_size)  # *2 for bidirectional
+    
+    def forward(self, x):
+        out, _ = self.lstm(x)
+        out = self.fc(out[:, -1, :])
+        return out
+
+class AttentionLSTMModel(nn.Module):
+    def __init__(self, input_size=3, hidden_size=50, output_size=1):
+        super().__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size, batch_first=True)
+        self.attention = nn.Linear(hidden_size, 1)
+        self.fc = nn.Linear(hidden_size, output_size)
+    
+    def forward(self, x):
+        out, _ = self.lstm(x)
+        attn_weights = torch.softmax(self.attention(out).squeeze(2), dim=1)
+        context = torch.bmm(attn_weights.unsqueeze(1), out).squeeze(1)
+        out = self.fc(context)
+        return out
+
+class TCNModel(nn.Module):
+    def __init__(self, input_size=3, hidden_size=50, output_size=1, kernel_size=2):
+        super().__init__()
+        self.conv1 = nn.Conv1d(input_size, hidden_size, kernel_size, padding=(kernel_size-1)//2)
+        self.conv2 = nn.Conv1d(hidden_size, hidden_size, kernel_size, padding=(kernel_size-1)//2)
+        self.fc = nn.Linear(hidden_size, output_size)
+    
+    def forward(self, x):
+        x = x.transpose(1, 2)  # (batch, seq, features) -> (batch, features, seq)
+        out = torch.relu(self.conv1(x))
+        out = torch.relu(self.conv2(out))
+        out = out[:, :, -1]  # Take the last time step
+        out = self.fc(out)
+        return out
+
 class GRUModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1):
         super().__init__()
@@ -51,6 +93,17 @@ class GRUModel(nn.Module):
     
     def forward(self, x):
         out, _ = self.gru(x)
+        out = self.fc(out[:, -1, :])
+        return out
+
+class TransformerModel(nn.Module):
+    def __init__(self, input_size=3, hidden_size=50, output_size=1):
+        super().__init__()
+        self.transformer = nn.Transformer(d_model=input_size, nhead=1, batch_first=True)
+        self.fc = nn.Linear(input_size, output_size)
+    
+    def forward(self, x):
+        out = self.transformer(x, x)
         out = self.fc(out[:, -1, :])
         return out
 
@@ -63,6 +116,19 @@ class NARXModel(nn.Module):
     def forward(self, x):
         x = x.squeeze(1)
         x = torch.tanh(self.fc1(x))
+        out = self.fc2(x)
+        return out
+
+# NBEATS simple version with torch
+class NBEATSModel(nn.Module):
+    def __init__(self, input_size=3, hidden_size=50, output_size=1):
+        super().__init__()
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, output_size)
+    
+    def forward(self, x):
+        x = x.squeeze(1)
+        x = torch.relu(self.fc1(x))
         out = self.fc2(x)
         return out
 
@@ -122,6 +188,14 @@ for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
         'LSTM': LSTMModel(input_size=input_size),
         'GRU': GRUModel(input_size=input_size),
         'NARX': NARXModel(input_size=input_size),
+        'BiLSTM': BiLSTMModel(input_size=input_size),
+        'AttentionLSTM': AttentionLSTMModel(input_size=input_size),
+        'TCN': TCNModel(input_size=input_size),
+        'NBEATS': NBEATSModel(input_size=input_size),
+        'Transformer': TransformerModel(input_size=input_size),
+        'RandomForest': RandomForestRegressor(),
+        'ARIMA': ARIMA,  # Will initialize during training
+        'Prophet': Prophet  # Will initialize during training, if available
     }
     scalers[interval] = {}
     y_scalers[interval] = {}
@@ -158,10 +232,23 @@ async def train():
                 logger.info(f"X shape before training for {interval}: {X.shape}")
             for name in models[interval]:
                 logger.info(f"Training {name} model for interval {interval}")
-                model, scaler, y_scaler, train_time = train_model(models[interval][name], X[:-1], data['Target'].values[:-1])
-                models[interval][name] = model
-                scalers[interval][name] = scaler
-                y_scalers[interval][name] = y_scaler
+                if name in ['RandomForest']:
+                    model = models[interval][name]
+                    model.fit(X[:-1], data['Target'].values[:-1])
+                elif name in ['ARIMA']:
+                    model = ARIMA(data['Target'].values[:-1], order=(5,1,0))  # Simple ARIMA order
+                    model = model.fit()
+                    models[interval][name] = model
+                elif name in ['Prophet']:
+                    df = pd.DataFrame({'ds': data.index[:-1], 'y': data['Target'].values[:-1]})
+                    model = Prophet()
+                    model.fit(df)
+                    models[interval][name] = model
+                else:  # Torch models
+                    model, scaler, y_scaler, train_time = train_model(models[interval][name], X[:-1], data['Target'].values[:-1])
+                    models[interval][name] = model
+                    scalers[interval][name] = scaler
+                    y_scalers[interval][name] = y_scaler
         trained = True
         logger.info("Training completed successfully")
         return {"status": "Training completed", "trained": trained}
@@ -192,7 +279,6 @@ async def get_signal(interval: str = "5m"):
             original_rows = len(data)
             data = data.dropna()
             logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}, rows dropped: {original_rows - len(data)}")
-            # Проверка на наличността на всички необходими колони
             required_columns = ['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m']
             missing_columns = [col for col in required_columns if col not in data.columns]
             if missing_columns:
@@ -210,14 +296,27 @@ async def get_signal(interval: str = "5m"):
                 raise ValueError("Models not trained, please call /api/train first")
         
         predictions = []
-        for name, model in models[interval].items():
-            last_input = X[-1].reshape(1, -1)
-            logger.info(f"Raw input shape for {name}: {last_input.shape}")
-            last_input_scaled = scalers[interval][name].transform(last_input)
-            logger.info(f"Transformed input shape for {name}: {last_input_scaled.shape}")
-            last_input_tensor = torch.tensor(last_input_scaled).float().unsqueeze(1)
-            pred_normalized = model(last_input_tensor).item()
-            pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
+        for name in models[interval]:
+            if name in ['RandomForest']:
+                model = models[interval][name]
+                pred = model.predict(X[-1].reshape(1, -1))[0]
+            elif name in ['ARIMA']:
+                model = models[interval][name]
+                pred = model.forecast(steps=1)[0]
+            elif name in ['Prophet']:
+                model = models[interval][name]
+                future = model.make_future_dataframe(periods=1, freq='30min')
+                forecast = model.predict(future)
+                pred = forecast['yhat'].iloc[-1]
+            else:  # Torch models
+                model = models[interval][name]
+                last_input = X[-1].reshape(1, -1)
+                logger.info(f"Raw input shape for {name}: {last_input.shape}")
+                last_input_scaled = scalers[interval][name].transform(last_input)
+                logger.info(f"Transformed input shape for {name}: {last_input_scaled.shape}")
+                last_input_tensor = torch.tensor(last_input_scaled).float().unsqueeze(1)
+                pred_normalized = model(last_input_tensor).item()
+                pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
             predictions.append({'name': name, 'rate': pred, 'train_time': latest_predictions.get(interval, {}).get('train_time', 0.0)})
             logger.info(f"{name} prediction: {pred}")
         
@@ -237,16 +336,28 @@ async def get_signal(interval: str = "5m"):
             y_1d = data_1d['Target'].values
             predictions_1d = []
             for name in models[interval]:
-                last_input_1d = X_1d[-1].reshape(1, -1)
-                temp_scaler = MinMaxScaler()
-                temp_scaler.fit(last_input_1d)
-                last_input_1d_scaled = temp_scaler.transform(last_input_1d)
-                last_input_tensor_1d = torch.tensor(last_input_1d_scaled).float().unsqueeze(1)
-                # Добавяне на dummy features, за да съответства на 10 колони
-                dummy = np.zeros((last_input_tensor_1d.shape[0], last_input_tensor_1d.shape[1], 5))
-                last_input_tensor_1d = torch.cat((last_input_tensor_1d, torch.tensor(dummy).float()), dim=2)
-                pred_normalized_1d = model(last_input_tensor_1d).item()
-                pred_1d = y_scalers[interval][name].inverse_transform([[pred_normalized_1d]])[0][0]
+                if name in ['RandomForest']:
+                    model = models[interval][name]
+                    pred_1d = model.predict(X_1d[-1].reshape(1, -1))[0]
+                elif name in ['ARIMA']:
+                    model = models[interval][name]
+                    pred_1d = model.forecast(steps=1)[0]
+                elif name in ['Prophet']:
+                    model = models[interval][name]
+                    future = model.make_future_dataframe(periods=1, freq='D')
+                    forecast = model.predict(future)
+                    pred_1d = forecast['yhat'].iloc[-1]
+                else:
+                    model = models[interval][name]
+                    last_input_1d = X_1d[-1].reshape(1, -1)
+                    temp_scaler = MinMaxScaler()
+                    temp_scaler.fit(last_input_1d)
+                    last_input_1d_scaled = temp_scaler.transform(last_input_1d)
+                    last_input_tensor_1d = torch.tensor(last_input_1d_scaled).float().unsqueeze(1)
+                    dummy = np.zeros((last_input_tensor_1d.shape[0], last_input_tensor_1d.shape[1], 5))
+                    last_input_tensor_1d = torch.cat((last_input_tensor_1d, torch.tensor(dummy).float()), dim=2)
+                    pred_normalized_1d = model(last_input_tensor_1d).item()
+                    pred_1d = y_scalers[interval][name].inverse_transform([[pred_normalized_1d]])[0][0]
                 predictions_1d.append({'name': name, 'rate': pred_1d})
             latest_predictions[interval]['predictions_1d'] = predictions_1d
         
@@ -280,7 +391,7 @@ async def get_signal(interval: str = "5m"):
 async def backtest(interval: str = "5m", days: int = 30):
     global trained
     try:
-        logger.info(f"Backtesting for interval {interval}, days {days}, trained status: {trained}")
+        logger.info(f"Backtesting for interval {interval}, days {days}, trained status: {trained} - Version Check: 2025-08-23-2100")
         if not trained:
             raise ValueError("Models not trained, please call /api/train first")
         data = fetch_data(interval, days / 365)
@@ -295,8 +406,8 @@ async def backtest(interval: str = "5m", days: int = 30):
             data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close_15m'].to_numpy(), timeperiod=10)
             data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
             data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
-            data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m']], how='left') \
-                      .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']], how='left')
+            data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='left') \
+                      .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='left')
             data = data.dropna()
             X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m']].values
         else:
@@ -304,11 +415,24 @@ async def backtest(interval: str = "5m", days: int = 30):
         
         predictions = []
         actuals = data['Target'].values[1:]
-        for name, model in models[interval].items():
-            scaled_X = scalers[interval][name].transform(X)
-            X_tensor = torch.tensor(scaled_X).float().unsqueeze(1)
-            preds_normalized = model(X_tensor).detach().numpy().squeeze()
-            preds = y_scalers[interval][name].inverse_transform(preds_normalized.reshape(-1, 1)).squeeze()
+        for name in models[interval]:
+            if name in ['RandomForest']:
+                model = models[interval][name]
+                preds = model.predict(X)
+            elif name in ['ARIMA']:
+                model = models[interval][name]
+                preds = model.forecast(steps=len(X))
+            elif name in ['Prophet']:
+                model = models[interval][name]
+                future = model.make_future_dataframe(periods=len(X), freq=interval)
+                forecast = model.predict(future)
+                preds = forecast['yhat'].values
+            else:  # Torch models
+                model = models[interval][name]
+                scaled_X = scalers[interval][name].transform(X)
+                X_tensor = torch.tensor(scaled_X).float().unsqueeze(1)
+                preds_normalized = model(X_tensor).detach().numpy().squeeze()
+                preds = y_scalers[interval][name].inverse_transform(preds_normalized.reshape(-1, 1)).squeeze()
             mse = np.mean((preds[:-1] - actuals) ** 2) if len(actuals) > 0 else 0.0
             predictions.append({'name': name, 'predictions': preds.tolist(), 'mse': mse})
             logger.info(f"{name} backtest MSE: {mse}")
@@ -380,8 +504,8 @@ async def retrain():
                 data_15m_resampled['EMA10_15m'] = talib.EMA(data_15m_resampled['Close_15m'].to_numpy(), timeperiod=10)
                 data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
                 data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
-                data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'SMA10_5m', 'EMA10_5m']], how='left') \
-                          .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'SMA10_15m', 'EMA10_15m']], how='left')
+                data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='left') \
+                      .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='left')
                 data = data.dropna()
                 X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m']].values
                 logger.info(f"X shape before retraining: {X.shape}")

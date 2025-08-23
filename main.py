@@ -130,7 +130,7 @@ for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
 async def train():
     global trained
     try:
-        logger.info("Training started")
+        logger.info("Training started - Version Check: 2025-08-23-2100")
         for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
             data = fetch_data(interval, 10)
             if interval == '30m':
@@ -173,7 +173,7 @@ async def train():
 async def get_signal(interval: str = "5m"):
     global trained
     try:
-        logger.info(f"Processing signal for interval {interval}, trained status: {trained}")
+        logger.info(f"Processing signal for interval {interval}, trained status: {trained} - Version Check: 2025-08-23-2100")
         data = fetch_data(interval, 10)
         if interval == '30m':
             data_5m = fetch_data('5m', 10)
@@ -366,7 +366,7 @@ async def get_chart_data(interval: str = "5m", days: int = 30):
 async def retrain():
     global trained
     try:
-        logger.info("Retraining started")
+        logger.info("Retraining started - Version Check: 2025-08-23-2100")
         for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
             data = fetch_data(interval, 10)
             if interval == '30m':
@@ -406,7 +406,7 @@ async def retrain():
 @app.get("/api/models")
 async def get_models():
     try:
-        logger.info("Fetching model details")
+        logger.info("Fetching model details - Version Check: 2025-08-23-2100")
         model_details = {}
         for interval in models:
             model_details[interval] = {
@@ -504,7 +504,7 @@ async def notify_whatsapp():
 
 def run_scheduler():
     def job():
-        logger.info("Scheduler job triggered")
+        logger.info("Scheduler job triggered - Version Check: 2025-08-23-2100")
         asyncio.run(get_signal(interval="5m"))
     
     schedule.every(5).minutes.do(job)

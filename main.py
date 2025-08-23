@@ -19,6 +19,7 @@ import logging
 import talib
 from sklearn.ensemble import RandomForestRegressor
 from statsmodels.tsa.arima.model import ARIMA
+from prophet import Prophet
 
 # Настройка на логове за дебъг
 logging.basicConfig(level=logging.INFO)

@@ -191,8 +191,13 @@ async def get_signal(interval: str = "5m"):
             logger.info(f"Columns before dropna for 30m: {data.columns.tolist()}")
             data = data.dropna()
             logger.info(f"Columns after dropna for 30m: {data.columns.tolist()}")
-            X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m']].values
-            logger.info(f"X shape before prediction: {X.shape}, X columns: {data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m']].columns.tolist()}")
+            # Проверка на наличността на всички колони
+            required_columns = ['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m']
+            missing_columns = [col for col in required_columns if col not in data.columns]
+            if missing_columns:
+                raise ValueError(f"Missing columns in data: {missing_columns}")
+            X = data[required_columns].values
+            logger.info(f"X shape before prediction: {X.shape}, X columns: {required_columns}")
             if X.shape[1] != 10:
                 raise ValueError(f"Expected 10 features, got {X.shape[1]}: {data.columns.tolist()}")
             if not trained:

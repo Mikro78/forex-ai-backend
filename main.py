@@ -73,20 +73,20 @@ class AttentionLSTMModel(nn.Module):
         return out
 
 class TCNModel(nn.Module):
-    def __init__(self, input_size=3, hidden_size=50, output_size=1, kernel_size=2):
+    def __init__(self, input_size=3, hidden_size=50, output_size=1):
         super().__init__()
-        # Ако входът е твърде малък, намали kernel_size до 1
-        self.kernel_size = min(kernel_size, input_size)
-        self.conv1 = nn.Conv1d(input_size, hidden_size, self.kernel_size, padding=(self.kernel_size-1)//2)
-        self.conv2 = nn.Conv1d(hidden_size, hidden_size, self.kernel_size, padding=(self.kernel_size-1)//2)
-        self.fc = nn.Linear(hidden_size, output_size)
+        # Премахваме Conv1d и използваме плътни слоеве вместо TCN
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, output_size)
     
     def forward(self, x):
-        x = x.transpose(1, 2)  # (batch, seq, features) -> (batch, features, seq)
-        out = torch.relu(self.conv1(x))
-        out = torch.relu(self.conv2(out))
-        out = out[:, :, -1]  # Take the last time step
-        out = self.fc(out)
+        # Пропускаме transpose, тъй като работим с (batch, seq, features)
+        batch_size, seq_len, features = x.size()
+        if seq_len != 1:
+            raise ValueError(f"Expected sequence length of 1, got {seq_len}")
+        x = x.squeeze(1)  # Премахваме seq_len измерението
+        out = torch.relu(self.fc1(x))
+        out = self.fc2(out)
         return out
 
 class GRUModel(nn.Module):
@@ -163,7 +163,7 @@ def fetch_data(interval='5m', years=10):
 def train_model(model, X, y, epochs=100):
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
-    X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)
+    X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)  # Добавяме seq_len = 1
     y_scaler = MinMaxScaler()
     y_scaled = y_scaler.fit_transform(y.reshape(-1, 1)).squeeze()
     y_tensor = torch.tensor(y_scaled).float().unsqueeze(-1)

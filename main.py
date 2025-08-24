@@ -75,16 +75,14 @@ class AttentionLSTMModel(nn.Module):
 class TCNModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1):
         super().__init__()
-        # Премахваме Conv1d и използваме плътни слоеве вместо TCN
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, output_size)
     
     def forward(self, x):
-        # Пропускаме transpose, тъй като работим с (batch, seq, features)
         batch_size, seq_len, features = x.size()
         if seq_len != 1:
             raise ValueError(f"Expected sequence length of 1, got {seq_len}")
-        x = x.squeeze(1)  # Премахваме seq_len измерението
+        x = x.squeeze(1)
         out = torch.relu(self.fc1(x))
         out = self.fc2(out)
         return out
@@ -163,7 +161,7 @@ def fetch_data(interval='5m', years=10):
 def train_model(model, X, y, epochs=100):
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
-    X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)  # Добавяме seq_len = 1
+    X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)
     y_scaler = MinMaxScaler()
     y_scaled = y_scaler.fit_transform(y.reshape(-1, 1)).squeeze()
     y_tensor = torch.tensor(y_scaled).float().unsqueeze(-1)
@@ -197,8 +195,8 @@ for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
         'NBEATS': NBEATSModel(input_size=input_size),
         'Transformer': TransformerModel(input_size=input_size),
         'RandomForest': RandomForestRegressor(),
-        'ARIMA': ARIMA,  # Will initialize during training
-        'Prophet': Prophet  # Will initialize during training
+        'ARIMA': ARIMA,
+        'Prophet': Prophet
     }
     scalers[interval] = {}
     y_scalers[interval] = {}
@@ -239,11 +237,12 @@ async def train():
                     model = models[interval][name]
                     model.fit(X[:-1], data['Target'].values[:-1])
                 elif name in ['ARIMA']:
-                    model = ARIMA(data['Target'].values[:-1], order=(5,1,0))  # Simple ARIMA order
+                    model = ARIMA(data['Target'].values[:-1], order=(5,1,0))
                     model = model.fit()
                     models[interval][name] = model
                 elif name in ['Prophet']:
-                    df = pd.DataFrame({'ds': data.index[:-1], 'y': data['Target'].values[:-1]})
+                    # Премахваме времевата зона от индекса
+                    df = pd.DataFrame({'ds': data.index[:-1].tz_localize(None), 'y': data['Target'].values[:-1]})
                     model = Prophet()
                     model.fit(df)
                     models[interval][name] = model

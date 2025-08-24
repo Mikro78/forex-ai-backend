@@ -650,7 +650,8 @@ def run_prediction():
         logger.error(f"Error during prediction: {str(e)}")
 
 # Настройка на периодично изпълнение всеки час
-schedule.every(1).hours.do(run_prediction)
+# schedule.every(1).hours.do(run_prediction)
+schedule.every(5).minutes.do(run_prediction)
 
 # Функция за работа на schedule в отделен поток
 def run_scheduler():

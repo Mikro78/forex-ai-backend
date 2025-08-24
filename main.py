@@ -51,7 +51,7 @@ class BiLSTMModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1):
         super().__init__()
         self.lstm = nn.LSTM(input_size, hidden_size, batch_first=True, bidirectional=True)
-        self.fc = nn.Linear(hidden_size * 2, output_size)  # *2 for bidirectional
+        self.fc = nn.Linear(hidden_size * 2, output_size)
     
     def forward(self, x):
         out, _ = self.lstm(x)
@@ -141,7 +141,7 @@ def fetch_data(interval='5m', years=10):
     logger.info(f"Fetching data for {ticker} with interval {interval} from {start} to {end}")
     try:
         data = yf.download(ticker, start=start, end=end, interval=interval, progress=False, auto_adjust=False)
-        data.columns = data.columns.get_level_values(0)  # Flatten multi-index columns
+        data.columns = data.columns.get_level_values(0)
         if data.empty:
             raise ValueError(f"No data returned for {ticker} with interval {interval}")
         data['Target'] = data['Close'].shift(-1)
@@ -158,7 +158,7 @@ def fetch_data(interval='5m', years=10):
         logger.error(f"Failed to fetch data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch data: {str(e)}")
 
-def train_model(model, X, y, epochs=100):
+def train_model(model, X, y, epochs=20):  # Намаляване на епохите от 100 на 20
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
     X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)
@@ -183,7 +183,7 @@ y_scalers = {}
 trained = False
 last_email_time = {}
 
-for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
+for interval in ['5m', '1h']:  # Ограничаване на интервалите до 5m и 1h
     input_size = 5 if interval != '30m' else 10
     models[interval] = {
         'LSTM': LSTMModel(input_size=input_size),
@@ -206,7 +206,7 @@ async def train():
     global trained
     try:
         logger.info("Training started - Version Check: 2025-08-23-2100")
-        for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
+        for interval in ['5m', '1h']:  # Ограничаване на интервалите до 5m и 1h
             data = fetch_data(interval, 10)
             if interval == '30m':
                 data_5m = fetch_data('5m', 10)
@@ -241,12 +241,11 @@ async def train():
                     model = model.fit()
                     models[interval][name] = model
                 elif name in ['Prophet']:
-                    # Премахваме времевата зона от индекса
                     df = pd.DataFrame({'ds': data.index[:-1].tz_localize(None), 'y': data['Target'].values[:-1]})
                     model = Prophet()
                     model.fit(df)
                     models[interval][name] = model
-                else:  # Torch models
+                else:
                     model, scaler, y_scaler, train_time = train_model(models[interval][name], X[:-1], data['Target'].values[:-1])
                     models[interval][name] = model
                     scalers[interval][name] = scaler
@@ -403,7 +402,7 @@ async def backtest(interval: str = "5m", days: int = 30):
                 future = model.make_future_dataframe(periods=len(X), freq=interval)
                 forecast = model.predict(future)
                 preds = forecast['yhat'].values
-            else:  # Torch models
+            else:
                 model = models[interval][name]
                 scaled_X = scalers[interval][name].transform(X)
                 X_tensor = torch.tensor(scaled_X).float().unsqueeze(1)
@@ -467,7 +466,7 @@ async def retrain():
     global trained
     try:
         logger.info("Retraining started - Version Check: 2025-08-23-2100")
-        for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
+        for interval in ['5m', '1h']:
             data = fetch_data(interval, 10)
             if interval == '30m':
                 data_5m = fetch_data('5m', 10)
@@ -607,7 +606,7 @@ def run_prediction():
     try:
         response = requests.get("http://localhost:8000/api/signal?interval=5m")
         if response.status_code == 200:
-            logger.info(f"Prediction successful: {response.json()[:5]}")  # Логиране на първите 5 реда
+            logger.info(f"Prediction successful: {response.json()[:5]}")
         else:
             logger.error(f"Prediction failed with status {response.status_code}")
     except Exception as e:
@@ -620,7 +619,7 @@ schedule.every(1).hours.do(run_prediction)
 def run_scheduler():
     while True:
         schedule.run_pending()
-        time.sleep(60)  # Проверка на задачите всеки 60 секунди
+        time.sleep(60)
 
 scheduler_thread = Thread(target=run_scheduler, daemon=True)
 scheduler_thread.start()

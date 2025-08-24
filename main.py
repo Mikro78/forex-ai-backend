@@ -647,7 +647,9 @@ def run_prediction():
     try:
         response = requests.get("http://localhost:8000/api/signal?interval=5m")
         if response.status_code == 200:
-            logger.info(f"Prediction successful: {response.json()[:5]}")
+            data = response.json()
+            predictions = data.get('predictions', [])[:5]  # Взимаме първите 5 предсказания от списъка
+            logger.info(f"Prediction successful: {predictions}")
         else:
             logger.error(f"Prediction failed with status {response.status_code}")
     except Exception as e:

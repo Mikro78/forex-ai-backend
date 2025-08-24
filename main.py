@@ -75,8 +75,10 @@ class AttentionLSTMModel(nn.Module):
 class TCNModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1, kernel_size=2):
         super().__init__()
-        self.conv1 = nn.Conv1d(input_size, hidden_size, kernel_size, padding=(kernel_size-1)//2)
-        self.conv2 = nn.Conv1d(hidden_size, hidden_size, kernel_size, padding=(kernel_size-1)//2)
+        # Ако входът е твърде малък, намали kernel_size до 1
+        self.kernel_size = min(kernel_size, input_size)
+        self.conv1 = nn.Conv1d(input_size, hidden_size, self.kernel_size, padding=(self.kernel_size-1)//2)
+        self.conv2 = nn.Conv1d(hidden_size, hidden_size, self.kernel_size, padding=(self.kernel_size-1)//2)
         self.fc = nn.Linear(hidden_size, output_size)
     
     def forward(self, x):
@@ -601,18 +603,29 @@ async def notify_whatsapp():
         logger.error(f"WhatsApp notification failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"WhatsApp notification failed: {str(e)}")
 
+def run_prediction():
+    logger.info("Running hourly prediction for EURUSD=X")
+    try:
+        response = requests.get("http://localhost:8000/api/signal?interval=5m")
+        if response.status_code == 200:
+            logger.info(f"Prediction successful: {response.json()[:5]}")  # Логиране на първите 5 реда
+        else:
+            logger.error(f"Prediction failed with status {response.status_code}")
+    except Exception as e:
+        logger.error(f"Error during prediction: {str(e)}")
+
+# Настройка на периодично изпълнение всеки час
+schedule.every(1).hours.do(run_prediction)
+
+# Функция за работа на schedule в отделен поток
 def run_scheduler():
-    def job():
-        logger.info("Scheduler job triggered - Version Check: 2025-08-23-2100")
-        asyncio.run(get_signal(interval="5m"))
-    
-    schedule.every(5).minutes.do(job)
     while True:
         schedule.run_pending()
-        time.sleep(60)
+        time.sleep(60)  # Проверка на задачите всеки 60 секунди
+
+scheduler_thread = Thread(target=run_scheduler, daemon=True)
+scheduler_thread.start()
 
 if __name__ == "__main__":
-    scheduler_thread = Thread(target=run_scheduler, daemon=True)
-    scheduler_thread.start()
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

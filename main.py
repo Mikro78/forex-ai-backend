@@ -132,7 +132,7 @@ class NBEATSModel(nn.Module):
         out = self.fc2(x)
         return out
 
-def fetch_data(interval='5m', years=10):
+def fetch_data(interval='5m', years=3):
     ticker = 'EURUSD=X'
     end = datetime.now()
     max_days = 60 if interval in ['5m', '15m', '30m'] else 730 if interval in ['1h', '4h'] else 365 * years
@@ -157,7 +157,7 @@ def fetch_data(interval='5m', years=10):
         logger.error(f"Failed to fetch data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch data: {str(e)}")
 
-def train_model(model, X, y, epochs=20):
+def train_model(model, X, y, epochs=10):
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
     X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)

@@ -19,7 +19,6 @@ import os
 import asyncio
 import talib
 from sklearn.ensemble import RandomForestRegressor
-from statsmodels.tsa.arima.model import ARIMA
 from prophet import Prophet
 
 # Настройка на логове за дебъг
@@ -158,7 +157,7 @@ def fetch_data(interval='5m', years=10):
         logger.error(f"Failed to fetch data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch data: {str(e)}")
 
-def train_model(model, X, y, epochs=20):  # Намаляване на епохите от 100 на 20
+def train_model(model, X, y, epochs=20):
     scaler = MinMaxScaler()
     X_scaled = scaler.fit_transform(X)
     X_tensor = torch.tensor(X_scaled).float().unsqueeze(1)
@@ -183,7 +182,7 @@ y_scalers = {}
 trained = False
 last_email_time = {}
 
-for interval in ['5m', '1h']:  # Ограничаване на интервалите до 5m и 1h
+for interval in ['5m', '1h']:
     input_size = 5 if interval != '30m' else 10
     models[interval] = {
         'LSTM': LSTMModel(input_size=input_size),
@@ -195,7 +194,6 @@ for interval in ['5m', '1h']:  # Ограничаване на интервал�
         'NBEATS': NBEATSModel(input_size=input_size),
         'Transformer': TransformerModel(input_size=input_size),
         'RandomForest': RandomForestRegressor(),
-        'ARIMA': ARIMA,
         'Prophet': Prophet
     }
     scalers[interval] = {}
@@ -238,11 +236,7 @@ async def train():
                     X_scaled = scaler.fit_transform(X[:-1])
                     model = models[interval][name]
                     model.fit(X_scaled, data['Target'].values[:-1])
-                    scalers[interval][name] = scaler  # Запазваме scaler за RandomForest
-                elif name in ['ARIMA']:
-                    model = ARIMA(data['Target'].values[:-1], order=(5,1,0))
-                    model = model.fit()
-                    models[interval][name] = model
+                    scalers[interval][name] = scaler
                 elif name in ['Prophet']:
                     df = pd.DataFrame({'ds': data.index[:-1].tz_localize(None), 'y': data['Target'].values[:-1]})
                     model = Prophet()
@@ -304,9 +298,14 @@ async def get_signal(interval: str = "5m"):
             last_input = X[-1].reshape(1, -1)
             logger.info(f"Raw input shape for {name}: {last_input.shape}")
             if name in ['RandomForest']:
-                last_input_scaled = scalers[interval][name].transform(last_input)  # Нормализиране на входа
+                last_input_scaled = scalers[interval][name].transform(last_input)
                 pred = model.predict(last_input_scaled)
                 predictions.append({'name': name, 'rate': pred[0], 'train_time': latest_predictions.get(interval, {}).get('train_time', 0.0)})
+            elif name in ['Prophet']:
+                future = pd.DataFrame({'ds': [data.index[-1]]})
+                forecast = model.predict(future)
+                pred = forecast['yhat'].iloc[0]
+                predictions.append({'name': name, 'rate': pred, 'train_time': latest_predictions.get(interval, {}).get('train_time', 0.0)})
             else:
                 last_input_scaled = scalers[interval][name].transform(last_input)
                 logger.info(f"Transformed input shape for {name}: {last_input_scaled.shape}")
@@ -401,10 +400,8 @@ async def backtest(interval: str = "5m", days: int = 30):
         for name in models[interval]:
             if name in ['RandomForest']:
                 model = models[interval][name]
-                preds = model.predict(X)
-            elif name in ['ARIMA']:
-                model = models[interval][name]
-                preds = model.forecast(steps=len(X))
+                scaled_X = scalers[interval][name].transform(X)
+                preds = model.predict(scaled_X)
             elif name in ['Prophet']:
                 model = models[interval][name]
                 future = model.make_future_dataframe(periods=len(X), freq=interval)
@@ -499,10 +496,22 @@ async def retrain():
                 logger.info(f"X shape before training for {interval}: {X.shape}")
             for name in models[interval]:
                 logger.info(f"Training {name} model for interval {interval}")
-                model, scaler, y_scaler, train_time = train_model(models[interval][name], X[:-1], data['Target'].values[:-1])
-                models[interval][name] = model
-                scalers[interval][name] = scaler
-                y_scalers[interval][name] = y_scaler
+                if name in ['RandomForest']:
+                    scaler = MinMaxScaler()
+                    X_scaled = scaler.fit_transform(X[:-1])
+                    model = models[interval][name]
+                    model.fit(X_scaled, data['Target'].values[:-1])
+                    scalers[interval][name] = scaler
+                elif name in ['Prophet']:
+                    df = pd.DataFrame({'ds': data.index[:-1].tz_localize(None), 'y': data['Target'].values[:-1]})
+                    model = Prophet()
+                    model.fit(df)
+                    models[interval][name] = model
+                else:
+                    model, scaler, y_scaler, train_time = train_model(models[interval][name], X[:-1], data['Target'].values[:-1])
+                    models[interval][name] = model
+                    scalers[interval][name] = scaler
+                    y_scalers[interval][name] = y_scaler
         trained = True
         logger.info("Retraining completed successfully")
         return {"status": "Retraining completed", "trained": trained}
@@ -539,11 +548,21 @@ async def notify_email():
                 predictions = []
                 for name, model in models[interval].items():
                     last_input = X[-1].reshape(1, -1)
-                    last_input_scaled = scalers[interval][name].transform(last_input)
-                    last_input_tensor = torch.tensor(last_input_scaled).float().unsqueeze(1)
-                    pred_normalized = model(last_input_tensor).item()
-                    pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
-                    predictions.append({'name': name, 'rate': pred})
+                    if name in ['RandomForest']:
+                        last_input_scaled = scalers[interval][name].transform(last_input)
+                        pred = model.predict(last_input_scaled)
+                        predictions.append({'name': name, 'rate': pred[0]})
+                    elif name in ['Prophet']:
+                        future = pd.DataFrame({'ds': [data.index[-1]]})
+                        forecast = model.predict(future)
+                        pred = forecast['yhat'].iloc[0]
+                        predictions.append({'name': name, 'rate': pred})
+                    else:
+                        last_input_scaled = scalers[interval][name].transform(last_input)
+                        last_input_tensor = torch.tensor(last_input_scaled).float().unsqueeze(1)
+                        pred_normalized = model(last_input_tensor).item()
+                        pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
+                        predictions.append({'name': name, 'rate': pred})
                 last_close = data['Close'].iloc[-1].item()
                 pred_rates = ', '.join([f"{p['name']}: {p['rate']:.5f}" for p in predictions])
                 gmail_user = os.getenv('GMAIL_USER')
@@ -584,11 +603,21 @@ async def notify_whatsapp():
                 predictions = []
                 for name, model in models[interval].items():
                     last_input = X[-1].reshape(1, -1)
-                    last_input_scaled = scalers[interval][name].transform(last_input)
-                    last_input_tensor = torch.tensor(last_input_scaled).float().unsqueeze(1)
-                    pred_normalized = model(last_input_tensor).item()
-                    pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
-                    predictions.append({'name': name, 'rate': pred})
+                    if name in ['RandomForest']:
+                        last_input_scaled = scalers[interval][name].transform(last_input)
+                        pred = model.predict(last_input_scaled)
+                        predictions.append({'name': name, 'rate': pred[0]})
+                    elif name in ['Prophet']:
+                        future = pd.DataFrame({'ds': [data.index[-1]]})
+                        forecast = model.predict(future)
+                        pred = forecast['yhat'].iloc[0]
+                        predictions.append({'name': name, 'rate': pred})
+                    else:
+                        last_input_scaled = scalers[interval][name].transform(last_input)
+                        last_input_tensor = torch.tensor(last_input_scaled).float().unsqueeze(1)
+                        pred_normalized = model(last_input_tensor).item()
+                        pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
+                        predictions.append({'name': name, 'rate': pred})
                 last_close = data['Close'].iloc[-1].item()
                 pred_rates = ', '.join([f"{p['name']}: {p['rate']:.5f}" for p in predictions])
                 account_sid = os.getenv('TWILIO_ACCOUNT_SID')

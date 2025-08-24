@@ -206,7 +206,7 @@ async def train():
     global trained
     try:
         logger.info("Training started - Version Check: 2025-08-23-2100")
-        for interval in ['5m', '1h']:  # Ограничаване на интервалите до 5m и 1h
+        for interval in ['5m', '1h']:
             data = fetch_data(interval, 10)
             if interval == '30m':
                 data_5m = fetch_data('5m', 10)
@@ -234,8 +234,11 @@ async def train():
             for name in models[interval]:
                 logger.info(f"Training {name} model for interval {interval}")
                 if name in ['RandomForest']:
+                    scaler = MinMaxScaler()
+                    X_scaled = scaler.fit_transform(X[:-1])
                     model = models[interval][name]
-                    model.fit(X[:-1], data['Target'].values[:-1])
+                    model.fit(X_scaled, data['Target'].values[:-1])
+                    scalers[interval][name] = scaler  # Запазваме scaler за RandomForest
                 elif name in ['ARIMA']:
                     model = ARIMA(data['Target'].values[:-1], order=(5,1,0))
                     model = model.fit()
@@ -300,12 +303,17 @@ async def get_signal(interval: str = "5m"):
         for name, model in models[interval].items():
             last_input = X[-1].reshape(1, -1)
             logger.info(f"Raw input shape for {name}: {last_input.shape}")
-            last_input_scaled = scalers[interval][name].transform(last_input)
-            logger.info(f"Transformed input shape for {name}: {last_input_scaled.shape}")
-            last_input_tensor = torch.tensor(last_input_scaled).float().unsqueeze(1)
-            pred_normalized = model(last_input_tensor).item()
-            pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
-            predictions.append({'name': name, 'rate': pred, 'train_time': latest_predictions.get(interval, {}).get('train_time', 0.0)})
+            if name in ['RandomForest']:
+                last_input_scaled = scalers[interval][name].transform(last_input)  # Нормализиране на входа
+                pred = model.predict(last_input_scaled)
+                predictions.append({'name': name, 'rate': pred[0], 'train_time': latest_predictions.get(interval, {}).get('train_time', 0.0)})
+            else:
+                last_input_scaled = scalers[interval][name].transform(last_input)
+                logger.info(f"Transformed input shape for {name}: {last_input_scaled.shape}")
+                last_input_tensor = torch.tensor(last_input_scaled).float().unsqueeze(1)
+                pred_normalized = model(last_input_tensor).item()
+                pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
+                predictions.append({'name': name, 'rate': pred, 'train_time': latest_predictions.get(interval, {}).get('train_time', 0.0)})
             logger.info(f"{name} prediction: {pred}")
         
         last_close = data['Close'].iloc[-1].item()

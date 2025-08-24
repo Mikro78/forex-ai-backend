@@ -13,7 +13,6 @@ from sklearn.preprocessing import MinMaxScaler
 from datetime import datetime, timedelta
 import smtplib
 from email.mime.text import MIMEText
-import time
 from threading import Thread
 from twilio.rest import Client
 import os
@@ -29,18 +28,6 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# Настройка на периодично изпълнение всеки час
-schedule.every(1).hours.do(run_prediction)
-
-# Функция за работа на schedule в отделен поток
-def run_scheduler():
-    while True:
-        schedule.run_pending()
-        time.sleep(60)  # Проверка на задачите всеки 60 секунди
-
-import threading
-scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
-scheduler_thread.start()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -134,7 +121,6 @@ class NARXModel(nn.Module):
         out = self.fc2(x)
         return out
 
-# NBEATS simple version with torch
 class NBEATSModel(nn.Module):
     def __init__(self, input_size=3, hidden_size=50, output_size=1):
         super().__init__()
@@ -210,7 +196,7 @@ for interval in ['5m', '15m', '30m', '1h', '4h', '1d']:
         'Transformer': TransformerModel(input_size=input_size),
         'RandomForest': RandomForestRegressor(),
         'ARIMA': ARIMA,  # Will initialize during training
-        'Prophet': Prophet  # Will initialize during training, if available
+        'Prophet': Prophet  # Will initialize during training
     }
     scalers[interval] = {}
     y_scalers[interval] = {}
@@ -311,27 +297,14 @@ async def get_signal(interval: str = "5m"):
                 raise ValueError("Models not trained, please call /api/train first")
         
         predictions = []
-        for name in models[interval]:
-            if name in ['RandomForest']:
-                model = models[interval][name]
-                pred = model.predict(X[-1].reshape(1, -1))[0]
-            elif name in ['ARIMA']:
-                model = models[interval][name]
-                pred = model.forecast(steps=1)[0]
-            elif name in ['Prophet']:
-                model = models[interval][name]
-                future = model.make_future_dataframe(periods=1, freq='30min')
-                forecast = model.predict(future)
-                pred = forecast['yhat'].iloc[-1]
-            else:  # Torch models
-                model = models[interval][name]
-                last_input = X[-1].reshape(1, -1)
-                logger.info(f"Raw input shape for {name}: {last_input.shape}")
-                last_input_scaled = scalers[interval][name].transform(last_input)
-                logger.info(f"Transformed input shape for {name}: {last_input_scaled.shape}")
-                last_input_tensor = torch.tensor(last_input_scaled).float().unsqueeze(1)
-                pred_normalized = model(last_input_tensor).item()
-                pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
+        for name, model in models[interval].items():
+            last_input = X[-1].reshape(1, -1)
+            logger.info(f"Raw input shape for {name}: {last_input.shape}")
+            last_input_scaled = scalers[interval][name].transform(last_input)
+            logger.info(f"Transformed input shape for {name}: {last_input_scaled.shape}")
+            last_input_tensor = torch.tensor(last_input_scaled).float().unsqueeze(1)
+            pred_normalized = model(last_input_tensor).item()
+            pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
             predictions.append({'name': name, 'rate': pred, 'train_time': latest_predictions.get(interval, {}).get('train_time', 0.0)})
             logger.info(f"{name} prediction: {pred}")
         
@@ -351,28 +324,15 @@ async def get_signal(interval: str = "5m"):
             y_1d = data_1d['Target'].values
             predictions_1d = []
             for name in models[interval]:
-                if name in ['RandomForest']:
-                    model = models[interval][name]
-                    pred_1d = model.predict(X_1d[-1].reshape(1, -1))[0]
-                elif name in ['ARIMA']:
-                    model = models[interval][name]
-                    pred_1d = model.forecast(steps=1)[0]
-                elif name in ['Prophet']:
-                    model = models[interval][name]
-                    future = model.make_future_dataframe(periods=1, freq='D')
-                    forecast = model.predict(future)
-                    pred_1d = forecast['yhat'].iloc[-1]
-                else:
-                    model = models[interval][name]
-                    last_input_1d = X_1d[-1].reshape(1, -1)
-                    temp_scaler = MinMaxScaler()
-                    temp_scaler.fit(last_input_1d)
-                    last_input_1d_scaled = temp_scaler.transform(last_input_1d)
-                    last_input_tensor_1d = torch.tensor(last_input_1d_scaled).float().unsqueeze(1)
-                    dummy = np.zeros((last_input_tensor_1d.shape[0], last_input_tensor_1d.shape[1], 5))
-                    last_input_tensor_1d = torch.cat((last_input_tensor_1d, torch.tensor(dummy).float()), dim=2)
-                    pred_normalized_1d = model(last_input_tensor_1d).item()
-                    pred_1d = y_scalers[interval][name].inverse_transform([[pred_normalized_1d]])[0][0]
+                last_input_1d = X_1d[-1].reshape(1, -1)
+                temp_scaler = MinMaxScaler()
+                temp_scaler.fit(last_input_1d)
+                last_input_1d_scaled = temp_scaler.transform(last_input_1d)
+                last_input_tensor_1d = torch.tensor(last_input_1d_scaled).float().unsqueeze(1)
+                dummy = np.zeros((last_input_tensor_1d.shape[0], last_input_tensor_1d.shape[1], 5))
+                last_input_tensor_1d = torch.cat((last_input_tensor_1d, torch.tensor(dummy).float()), dim=2)
+                pred_normalized_1d = model(last_input_tensor_1d).item()
+                pred_1d = y_scalers[interval][name].inverse_transform([[pred_normalized_1d]])[0][0]
                 predictions_1d.append({'name': name, 'rate': pred_1d})
             latest_predictions[interval]['predictions_1d'] = predictions_1d
         
@@ -520,7 +480,7 @@ async def retrain():
                 data_5m_resampled = data_5m_resampled.reindex(data.index, method='ffill')
                 data_15m_resampled = data_15m_resampled.reindex(data.index, method='ffill')
                 data = data.join(data_5m_resampled[['Open_5m', 'High_5m', 'Low_5m', 'Close_5m', 'SMA10_5m', 'EMA10_5m']], how='left') \
-                      .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='left')
+                          .join(data_15m_resampled[['Open_15m', 'High_15m', 'Low_15m', 'Close_15m', 'SMA10_15m', 'EMA10_15m']], how='left')
                 data = data.dropna()
                 X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10', 'Open_5m', 'High_5m', 'Low_5m', 'Open_15m', 'High_15m']].values
                 logger.info(f"X shape before retraining: {X.shape}")

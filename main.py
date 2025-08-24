@@ -1,3 +1,7 @@
+import schedule
+import time
+import logging
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import yfinance as yf
@@ -9,13 +13,11 @@ from sklearn.preprocessing import MinMaxScaler
 from datetime import datetime, timedelta
 import smtplib
 from email.mime.text import MIMEText
-import schedule
 import time
 from threading import Thread
 from twilio.rest import Client
 import os
 import asyncio
-import logging
 import talib
 from sklearn.ensemble import RandomForestRegressor
 from statsmodels.tsa.arima.model import ARIMA

@@ -259,10 +259,10 @@ async def get_signal(interval: str = "5m"):
     global trained
     try:
         logger.info(f"Processing signal for interval {interval}, trained status: {trained} - Version Check: 2025-08-23-2100")
-        data = fetch_data(interval, 10)
+        data = fetch_data(interval, 3)  # Използваме years=3 според твоята промяна
         if interval == '30m':
-            data_5m = fetch_data('5m', 10)
-            data_15m = fetch_data('15m', 10)
+            data_5m = fetch_data('5m', 3)
+            data_15m = fetch_data('15m', 3)
             data_5m_resampled = data_5m.resample('30min').mean().add_suffix('_5m')
             data_15m_resampled = data_15m.resample('30min').mean().add_suffix('_15m')
             data_5m_resampled['SMA10_5m'] = talib.SMA(data_5m_resampled['Close_5m'].to_numpy(), timeperiod=10)
@@ -302,8 +302,12 @@ async def get_signal(interval: str = "5m"):
                 pred = model.predict(last_input_scaled)
                 predictions.append({'name': name, 'rate': pred[0], 'train_time': latest_predictions.get(interval, {}).get('train_time', 0.0)})
             elif name in ['Prophet']:
-                future = pd.DataFrame({'ds': [data.index[-1]]})
-                forecast = model.predict(future)
+                # Премахваме часовата зона преди да създадем DataFrame
+                df = pd.DataFrame({
+                    'ds': pd.to_datetime(data.index[-1]).tz_localize(None),  # Взимаме само последния ред и премахваме timezone
+                    'y': [data['Target'].iloc[-1]]  # Взимаме последната целева стойност
+                })
+                forecast = model.predict(df)
                 pred = forecast['yhat'].iloc[0]
                 predictions.append({'name': name, 'rate': pred, 'train_time': latest_predictions.get(interval, {}).get('train_time', 0.0)})
             else:
@@ -326,7 +330,7 @@ async def get_signal(interval: str = "5m"):
         }
         
         if interval == '30m':
-            data_1d = fetch_data('1d', 10)
+            data_1d = fetch_data('1d', 3)
             X_1d = data_1d[['Open', 'High', 'Low', 'SMA10', 'EMA10']].values
             y_1d = data_1d['Target'].values
             predictions_1d = []

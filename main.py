@@ -370,8 +370,8 @@ async def get_signal(interval: str = "5m"):
                     gmail_user = os.getenv('GMAIL_USER')
                     gmail_pass = os.getenv('GMAIL_PASS')
                     if gmail_user and gmail_pass:
-                        # Добавяне на стрелки спрямо last_close
-                        pred_rates = ', '.join([f"{p['name']}: {p['rate']:.5f} {'>' if p['rate'] > last_close else '<' if p['rate'] < last_close else '='}" for p in predictions])
+                        # Добавяне на зелена (↑) и червена (↓) стрелка за покупка/продажба спрямо last_close
+                        pred_rates = ', '.join([f"{p['name']}: {p['rate']:.5f} {'↑' if p['rate'] > last_close else '↓' if p['rate'] < last_close else '='}" for p in predictions])
                         msg = MIMEText(f"FOREX Signal for 5m: Predictions - {pred_rates}, Last Close: {last_close:.5f}")
                         msg['Subject'] = 'AI Forex Signal'
                         msg['From'] = gmail_user
@@ -389,6 +389,7 @@ async def get_signal(interval: str = "5m"):
     except Exception as e:
         logger.error(f"Error processing signal: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing signal: {str(e)}")
+        
 
 @app.get("/api/backtest")
 async def backtest(interval: str = "5m", days: int = 30):

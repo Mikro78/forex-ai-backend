@@ -316,7 +316,6 @@ async def get_signal(interval: str = "5m"):
                 pred = model.predict(last_input_scaled)
                 predictions.append({'name': name, 'rate': pred[0], 'train_time': latest_predictions.get(interval, {}).get('train_time', 0.0)})
             elif name in ['Prophet']:
-                # Премахваме часовата зона преди да създадем DataFrame
                 ds_date = pd.to_datetime(data.index[-1]).tz_localize(None)
                 future = pd.DataFrame({'ds': [ds_date]})
                 forecast = model.predict(future)
@@ -331,7 +330,6 @@ async def get_signal(interval: str = "5m"):
                 predictions.append({'name': name, 'rate': pred, 'train_time': latest_predictions.get(interval, {}).get('train_time', 0.0)})
             logger.info(f"{name} prediction: {pred}")
         
-        # Добавяне на енсембъл предсказание (просто средно аритметично)
         ensemble_rate = np.mean([p['rate'] for p in predictions])
         predictions.append({'name': 'Ensemble', 'rate': ensemble_rate, 'train_time': 0.0})
         
@@ -369,22 +367,22 @@ async def get_signal(interval: str = "5m"):
                 try:
                     gmail_user = os.getenv('GMAIL_USER')
                     gmail_pass = os.getenv('GMAIL_PASS')
-                    if gmail_user and gmail_pass:
-                        # Добавяне на зелена (↑) и червена (↓) стрелка за покупка/продажба спрямо last_close
-                        pred_rates = ', '.join([f"{p['name']}: {p['rate']:.5f} {'↑' if p['rate'] > last_close else '↓' if p['rate'] < last_close else '='}" for p in predictions])
-                        msg = MIMEText(f"FOREX Signal for 5m: Predictions - {pred_rates}, Last Close: {last_close:.5f}")
-                        msg['Subject'] = 'AI Forex Signal'
-                        msg['From'] = gmail_user
-                        msg['To'] = 'mironedv@abv.bg'
-                        with smtplib.SMTP('smtp.gmail.com', 587) as server:
-                            server.starttls()
-                            server.login(gmail_user, gmail_pass)
-                            server.send_message(msg)
-                        logger.info("Email sent successfully to mironedv@abv.bg")
-                        last_email_time['5m'] = current_time
+                    if not gmail_user or not gmail_pass:
+                        raise ValueError("GMAIL_USER or GMAIL_PASS not configured")
+                    pred_rates = ', '.join([f"{p['name']}: {p['rate']:.5f} {'↑' if p['rate'] > last_close else '↓' if p['rate'] < last_close else '='}" for p in predictions])
+                    msg = MIMEText(f"FOREX Signal for 5m: Predictions - {pred_rates}, Last Close: {last_close:.5f}")
+                    msg['Subject'] = 'AI Forex Signal'
+                    msg['From'] = gmail_user
+                    msg['To'] = 'mironedv@abv.bg'
+                    with smtplib.SMTP('smtp.gmail.com', 587) as server:
+                        server.starttls()
+                        server.login(gmail_user, gmail_pass)
+                        server.send_message(msg)
+                    logger.info("Email sent successfully to mironedv@abv.bg")
+                    last_email_time['5m'] = current_time
                 except Exception as e:
                     logger.error(f"Email failed: {str(e)}")
-        
+
         return latest_predictions[interval]
     except Exception as e:
         logger.error(f"Error processing signal: {str(e)}")

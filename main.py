@@ -132,6 +132,19 @@ class NBEATSModel(nn.Module):
         out = self.fc2(x)
         return out
 
+class LSTMGRUModel(nn.Module):
+    def __init__(self, input_size=3, hidden_size=50, output_size=1):
+        super().__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size, batch_first=True)
+        self.gru = nn.GRU(hidden_size, hidden_size, batch_first=True)
+        self.fc = nn.Linear(hidden_size, output_size)
+    
+    def forward(self, x):
+        out, _ = self.lstm(x)
+        out, _ = self.gru(out)
+        out = self.fc(out[:, -1, :])
+        return out
+
 def fetch_data(interval='5m', years=3):
     ticker = 'EURUSD=X'
     end = datetime.now()
@@ -194,7 +207,8 @@ for interval in ['5m', '1h']:
         'NBEATS': NBEATSModel(input_size=input_size),
         'Transformer': TransformerModel(input_size=input_size),
         'RandomForest': RandomForestRegressor(),
-        'Prophet': Prophet
+        'Prophet': Prophet,
+        'LSTMGRU': LSTMGRUModel(input_size=input_size)
     }
     scalers[interval] = {}
     y_scalers[interval] = {}
@@ -317,6 +331,10 @@ async def get_signal(interval: str = "5m"):
                 predictions.append({'name': name, 'rate': pred, 'train_time': latest_predictions.get(interval, {}).get('train_time', 0.0)})
             logger.info(f"{name} prediction: {pred}")
         
+        # Добавяне на енсембъл предсказание (просто средно аритметично)
+        ensemble_rate = np.mean([p['rate'] for p in predictions])
+        predictions.append({'name': 'Ensemble', 'rate': ensemble_rate, 'train_time': 0.0})
+        
         last_close = data['Close'].iloc[-1].item()
         latest_predictions[interval] = {
             'predictions': predictions,
@@ -352,7 +370,8 @@ async def get_signal(interval: str = "5m"):
                     gmail_user = os.getenv('GMAIL_USER')
                     gmail_pass = os.getenv('GMAIL_PASS')
                     if gmail_user and gmail_pass:
-                        pred_rates = ', '.join([f"{p['name']}: {p['rate']:.5f}" for p in predictions])
+                        # Добавяне на стрелки спрямо last_close
+                        pred_rates = ', '.join([f"{p['name']}: {p['rate']:.5f} {'>' if p['rate'] > last_close else '<' if p['rate'] < last_close else '='}" for p in predictions])
                         msg = MIMEText(f"FOREX Signal for 5m: Predictions - {pred_rates}, Last Close: {last_close:.5f}")
                         msg['Subject'] = 'AI Forex Signal'
                         msg['From'] = gmail_user

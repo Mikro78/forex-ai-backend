@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+yfinance
+pandas
+numpy
+torch
+scikit-learn
+TA-Lib
+schedule
+twilio
+statsmodels
+prophet
+plotly

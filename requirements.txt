@@ -1,10 +1,13 @@
 fastapi
 uvicorn
 yfinance
-torch
 pandas
 numpy
-scipy
+torch
 scikit-learn
+TA-Lib
 schedule
 twilio
+statsmodels
+prophet
+plotly

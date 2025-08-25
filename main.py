@@ -540,51 +540,38 @@ async def get_models():
 
 @app.post("/api/notify/email")
 async def notify_email():
-    global trained
+    global trained, last_email_time
     try:
-        if not trained:
-            raise ValueError("Models not trained, please call /api/train first")
+        logger.info("Email notification requested")
         current_time = time.time()
-        if not last_email_time.get('manual') or (current_time - last_email_time.get('manual', 0) >= 300):
-            for interval in ['5m']:
-                data = fetch_data(interval, 10)
-                X = data[['Open', 'High', 'Low', 'SMA10', 'EMA10']].values
-                predictions = []
-                for name, model in models[interval].items():
-                    last_input = X[-1].reshape(1, -1)
-                    if name in ['RandomForest']:
-                        last_input_scaled = scalers[interval][name].transform(last_input)
-                        pred = model.predict(last_input_scaled)
-                        predictions.append({'name': name, 'rate': pred[0]})
-                    elif name in ['Prophet']:
-                        future = pd.DataFrame({'ds': [data.index[-1]]})
-                        forecast = model.predict(future)
-                        pred = forecast['yhat'].iloc[0]
-                        predictions.append({'name': name, 'rate': pred})
-                    else:
-                        last_input_scaled = scalers[interval][name].transform(last_input)
-                        last_input_tensor = torch.tensor(last_input_scaled).float().unsqueeze(1)
-                        pred_normalized = model(last_input_tensor).item()
-                        pred = y_scalers[interval][name].inverse_transform([[pred_normalized]])[0][0]
-                        predictions.append({'name': name, 'rate': pred})
-                last_close = data['Close'].iloc[-1].item()
-                pred_rates = ', '.join([f"{p['name']}: {p['rate']:.5f}" for p in predictions])
-                gmail_user = os.getenv('GMAIL_USER')
-                gmail_pass = os.getenv('GMAIL_PASS')
-                if gmail_user and gmail_pass:
-                    msg = MIMEText(f"Manual FOREX Signal for {interval}: Predictions - {pred_rates}, Last Close: {last_close:.5f}")
-                    msg['Subject'] = 'Manual AI Forex Signal'
-                    msg['From'] = gmail_user
-                    msg['To'] = 'mironedv@abv.bg'
-                    with smtplib.SMTP('smtp.gmail.com', 587) as server:
-                        server.starttls()
-                        server.login(gmail_user, gmail_pass)
-                        server.send_message(msg)
-                    logger.info("Manual email sent successfully to mironedv@abv.bg")
-                    last_email_time['manual'] = current_time
-                else:
-                    logger.error("GMAIL_USER or GMAIL_PASS not set in environment")
-                    raise ValueError("Email credentials not configured")
+        if not last_email_time.get('email') or (current_time - last_email_time['email'] >= 300):
+            if not trained:
+                raise ValueError("Models not trained, please call /api/train first")
+            
+            # Извикваме get_signal за последните предсказания
+            signal_data = await get_signal(interval="5m")
+            predictions = signal_data['predictions']
+            last_close = signal_data['last_close']
+            
+            # Подготовка на съобщението
+            pred_rates = ', '.join([f"{p['name']}: {p['rate']:.5f}" for p in predictions])
+            gmail_user = os.getenv('GMAIL_USER')
+            gmail_pass = os.getenv('GMAIL_PASS')
+            if not gmail_user or not gmail_pass:
+                raise ValueError("GMAIL_USER or GMAIL_PASS not set in environment")
+            
+            msg = MIMEText(f"FOREX Signal for 5m: Predictions - {pred_rates}, Last Close: {last_close:.5f}")
+            msg['Subject'] = 'AI Forex Signal'
+            msg['From'] = gmail_user
+            msg['To'] = 'mironedv@abv.bg'
+            
+            with smtplib.SMTP('smtp.gmail.com', 587) as server:
+                server.starttls()
+                server.login(gmail_user, gmail_pass)
+                server.send_message(msg)
+            
+            logger.info("Email sent successfully to mironedv@abv.bg")
+            last_email_time['email'] = current_time
             return {"status": "Email notification sent"}
         else:
             logger.warning("Email cooldown active, please wait")
@@ -592,7 +579,7 @@ async def notify_email():
     except Exception as e:
         logger.error(f"Email notification failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Email notification failed: {str(e)}")
-
+        
 @app.post("/api/notify/whatsapp")
 async def notify_whatsapp():
     global trained

@@ -20,6 +20,7 @@ import asyncio
 import talib
 from sklearn.ensemble import RandomForestRegressor
 from prophet import Prophet
+from alpha_vantage.foreignexchange import ForeignExchange
 
 # Настройка на логове за дебъг
 logging.basicConfig(level=logging.INFO)
@@ -269,10 +270,17 @@ async def train():
         raise HTTPException(status_code=500, detail=f"Training failed: {str(e)}")
 
 @app.get("/api/signal")
-async def get_signal(interval: str = "5m"):
-    data = yf.download(tickers="EURUSD=X", interval=interval, period="30d")
-    last_close = data["Close"].iloc[-1]
-    return {"last_close": last_close, "predictions": ["↑", "↓", "="]}  # Твоята логика
+async def get_signal():
+    try:
+        cc = ForeignExchange(key='YOUR_API_KEY')  # Замени с твоя ключ
+        time.sleep(10)
+        data, _ = cc.get_currency_exchange_rate(from_currency='EUR', to_currency='USD')
+        rate = float(data['5. Exchange Rate'])
+        last_updated = data['6. Last Refreshed']
+        return {"last_close": rate, "last_updated": last_updated, "predictions": ["↑", "↓", "="]}
+    except Exception as e:
+        logger.error(f"Error in get_signal: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 @app.get("/api/backtest")
 async def backtest(interval: str = "5m", days: int = 30):

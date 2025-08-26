@@ -664,5 +664,7 @@ scheduler_thread = Thread(target=run_scheduler, daemon=True)
 scheduler_thread.start()
 
 if __name__ == "__main__":
+    import os
+    port = int(os.getenv("PORT", 10000))
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=port)

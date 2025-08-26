@@ -272,7 +272,7 @@ async def train():
 @app.get("/api/signal")
 async def get_signal():
     try:
-        cc = ForeignExchange(key='YOUR_API_KEY')  # Замени с твоя ключ
+        cc = ForeignExchange(key='YIZ8SXD2T4NVY40K')  # Замени с твоя ключ
         time.sleep(10)
         data, _ = cc.get_currency_exchange_rate(from_currency='EUR', to_currency='USD')
         rate = float(data['5. Exchange Rate'])
